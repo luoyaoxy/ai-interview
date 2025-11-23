@@ -1,0 +1,19 @@
+{
+  "name": "cpp-interview-system",
+  "version": "1.0.0",
+  "description": "C++ Technical Interview System with Real-time Audio Dialog (Qt GUI)",
+  "dependencies": [
+    "openssl",
+    "boost-system",
+    "boost-thread",
+    "boost-asio",
+    "boost-beast",
+    "nlohmann-json",
+    "zlib",
+    "portaudio",
+    "curl",
+    "podofo",
+    "spdlog",
+    "qtbase"
+  ]
+}
