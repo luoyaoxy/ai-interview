@@ -29,8 +29,6 @@ public:
 private slots:
     void OnNewSession();
     void OnStartSession();
-    void OnStopSession();
-    void OnOpenReport();
     
     // 状态机回调触发的UI更新
     void OnStateChangedFromMachine(InterviewState old_state, InterviewState new_state);
@@ -48,7 +46,6 @@ private:
     QLabel* status_label_;
     QProgressBar* progress_bar_;
     QPushButton* start_button_;
-    QPushButton* stop_button_;
     QPushButton* new_session_button_;
     
     std::unique_ptr<session::DialogSession> session_;

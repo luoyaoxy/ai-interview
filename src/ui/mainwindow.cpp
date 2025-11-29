@@ -26,7 +26,7 @@ MainWindow::MainWindow(QWidget *parent)
     SetupToolBar();
     SetupCentralWidget();
     
-    // 注册全局状态机观察者
+    // 注册全局状态机回调
     common::InterviewStateMachine::Instance().SetStateChangeCallback(
         [this](common::InterviewState old_state, common::InterviewState new_state) {
             // 在Qt主线程中更新UI
@@ -71,10 +71,6 @@ void MainWindow::SetupMenuBar() {
     newAction->setShortcut(QKeySequence::New);
     connect(newAction, &QAction::triggered, this, &MainWindow::OnNewSession);
     
-    QAction* reportAction = fileMenu->addAction("打开报告(&O)");
-    reportAction->setShortcut(QKeySequence::Open);
-    connect(reportAction, &QAction::triggered, this, &MainWindow::OnOpenReport);
-    
     fileMenu->addSeparator();
     
     QAction* exitAction = fileMenu->addAction("退出(&X)");
@@ -98,20 +94,14 @@ void MainWindow::SetupToolBar() {
     
     new_session_button_ = new QPushButton("新建会话", this);
     start_button_ = new QPushButton("开始面试", this);
-    stop_button_ = new QPushButton("停止", this);
-    QPushButton* reportButton = new QPushButton("查看报告", this);
     
     toolbar->addWidget(new_session_button_);
     toolbar->addSeparator();
     toolbar->addWidget(start_button_);
-    toolbar->addWidget(stop_button_);
     toolbar->addSeparator();
-    toolbar->addWidget(reportButton);
     
     connect(new_session_button_, &QPushButton::clicked, this, &MainWindow::OnNewSession);
     connect(start_button_, &QPushButton::clicked, this, &MainWindow::OnStartSession);
-    connect(stop_button_, &QPushButton::clicked, this, &MainWindow::OnStopSession);
-    connect(reportButton, &QPushButton::clicked, this, &MainWindow::OnOpenReport);
 }
 
 void MainWindow::SetupCentralWidget() {
@@ -230,7 +220,6 @@ void MainWindow::OnStartSession() {
     // 禁用按钮，防止重复点击
     start_button_->setEnabled(false);
     new_session_button_->setEnabled(false);
-    stop_button_->setEnabled(true);
     
     // 根据是否有简历显示不同状态
     if (!resume_path_.isEmpty()) {
@@ -304,35 +293,9 @@ void MainWindow::OnStartSession() {
                 // 恢复按钮状态
                 start_button_->setEnabled(true);
                 new_session_button_->setEnabled(true);
-                stop_button_->setEnabled(false);
             }, Qt::QueuedConnection);
         }
     });
-}
-
-void MainWindow::OnStopSession() {
-    if (session_) {
-        QMetaObject::invokeMethod(this, [this]() {
-            session_->Stop();
-        }, Qt::QueuedConnection);
-    }
-    if (session_thread_.joinable()) {
-        session_thread_.join();
-    }
-    session_ = nullptr;
-}
-
-void MainWindow::OnOpenReport() {
-    QString file_name = QFileDialog::getOpenFileName(
-        this,
-        "打开面试报告",
-        "",
-        "JSON 文件 (*.json);;所有文件 (*)"
-    );
-    
-    if (!file_name.isEmpty()) {
-        QDesktopServices::openUrl(QUrl::fromLocalFile(file_name));
-    }
 }
 
 void MainWindow::OnStateChangedFromMachine(InterviewState old_state, InterviewState new_state) {
@@ -387,19 +350,16 @@ void MainWindow::UpdateUIState(InterviewState state) {
     case InterviewState::kIdle:
         if (session_ && session_->IsRunning()) {
             start_button_->setEnabled(false);
-            stop_button_->setEnabled(true);
             new_session_button_->setEnabled(false);
             status_label_->setStyleSheet(baseStyle + "color: #4caf50; background-color: #e8f5e9; border-color: #81c784; }");
         } else {
             start_button_->setEnabled(false);
-            stop_button_->setEnabled(false);
             new_session_button_->setEnabled(true);
             status_label_->setStyleSheet(baseStyle + "color: #666; }");
         }
         break;
     case InterviewState::kConnecting:
         start_button_->setEnabled(false);
-        stop_button_->setEnabled(true);
         new_session_button_->setEnabled(false);
         status_label_->setStyleSheet(baseStyle + "color: #ff9800; background-color: #fff3e0; border-color: #ffb74d; }");
         break;
@@ -407,25 +367,21 @@ void MainWindow::UpdateUIState(InterviewState state) {
     case InterviewState::kCandidateSpeaking:
     case InterviewState::kInterviewerThinking:
         start_button_->setEnabled(false);
-        stop_button_->setEnabled(true);
         new_session_button_->setEnabled(false);
         status_label_->setStyleSheet(baseStyle + "color: #4caf50; background-color: #e8f5e9; border-color: #81c784; }");
         break;
     case InterviewState::kSessionEnding:
         start_button_->setEnabled(false);
-        stop_button_->setEnabled(false);
         new_session_button_->setEnabled(false);
         status_label_->setStyleSheet(baseStyle + "color: #ff9800; background-color: #fff3e0; border-color: #ffb74d; }");
         break;
     case InterviewState::kCompleted:
         start_button_->setEnabled(false);
-        stop_button_->setEnabled(false);
         new_session_button_->setEnabled(true);
         status_label_->setStyleSheet(baseStyle + "color: #2196f3; background-color: #e3f2fd; border-color: #64b5f6; }");
         break;
     case InterviewState::kError:
         start_button_->setEnabled(false);
-        stop_button_->setEnabled(false);
         new_session_button_->setEnabled(true);
         status_label_->setStyleSheet(baseStyle + "color: #f44336; background-color: #ffebee; border-color: #e57373; }");
         break;
