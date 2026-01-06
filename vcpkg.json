@@ -22,22 +22,6 @@
       "version": "3.6.0"
     },
     {
-      "name": "boost-system",
-      "version": "1.89.0"
-    },
-    {
-      "name": "boost-thread",
-      "version": "1.89.0"
-    },
-    {
-      "name": "boost-asio",
-      "version": "1.89.0"
-    },
-    {
-      "name": "boost-beast",
-      "version": "1.89.0"
-    },
-    {
       "name": "nlohmann-json",
       "version": "3.12.0"
     },
