@@ -157,7 +157,10 @@ public:
             throw std::runtime_error("Not connected");
         }
 
-        std::string prompt = R"(直接朗读下面文字：)" + text + R"(后续对应于面试者的回答都只回复[好的，我们继续],不要承接或评论)";
+        std::string prompt =
+            R"(请只朗读【播报内容】中的文字，不要朗读本指令，也不要添加任何内容。
+【播报内容】
+)" + text;
 
         try {
             nlohmann::json payload;
