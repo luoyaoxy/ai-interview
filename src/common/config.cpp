@@ -1,5 +1,6 @@
 #include "common/config.h"
 #include "common/utils.h"
+#include <cstdlib>
 #include <fstream>
 #include <stdexcept>
 
@@ -20,6 +21,16 @@ Config& Config::Instance() {
 Config::Config() = default;
 
 namespace {
+
+std::string GetEnvironmentOrDefault(
+    const char* variable_name,
+    const std::string& default_value) {
+    const char* value = std::getenv(variable_name);
+    if (value != nullptr && value[0] != '\0') {
+        return std::string(value);
+    }
+    return default_value;
+}
 
 template <typename T>
 T Require(const nlohmann::json& obj, const char* key) {
@@ -77,6 +88,18 @@ void Config::LoadFromFile(const std::string& path) {
     for (const auto& item : headers_obj.items()) {
         ws_config.headers[item.key()] = item.value().get<std::string>();
     }
+
+    // Sensitive credentials are loaded from environment variables when set.
+    ws_config.headers["X-Api-App-ID"] = GetEnvironmentOrDefault(
+        "DOUBAO_APP_ID",
+        ws_config.headers["X-Api-App-ID"]);
+    ws_config.headers["X-Api-Access-Key"] = GetEnvironmentOrDefault(
+        "DOUBAO_ACCESS_KEY",
+        ws_config.headers["X-Api-Access-Key"]);
+    ws_config.headers["X-Api-App-Key"] = GetEnvironmentOrDefault(
+        "DOUBAO_APP_KEY",
+        ws_config.headers["X-Api-App-Key"]);
+
     auto connect_id_it = ws_config.headers.find("X-Api-Connect-Id");
     if (connect_id_it == ws_config.headers.end() || connect_id_it->second.empty()) {
         ws_config.headers["X-Api-Connect-Id"] = common::GenerateUUID();
@@ -105,7 +128,9 @@ void Config::LoadFromFile(const std::string& path) {
 
     const auto& llm = RequireObject(root, "llm");
     llm_config.api_url = Require<std::string>(llm, "api_url");
-    llm_config.api_key = Require<std::string>(llm, "api_key");
+    llm_config.api_key = GetEnvironmentOrDefault(
+        "DEEPSEEK_API_KEY",
+        llm.value("api_key", std::string{}));
     llm_config.model = Require<std::string>(llm, "model");
     llm_config.temperature = static_cast<float>(Require<double>(llm, "temperature"));
     llm_config.max_tokens = Require<int>(llm, "max_tokens");

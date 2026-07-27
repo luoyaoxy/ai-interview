@@ -160,8 +160,8 @@ void InterviewSession::LoadQuestionsFromResume(const std::string& resume_pdf_pat
 }
 
 std::string InterviewSession::GetIntroPrompt() const {
-    // 触发AI主动开场：告诉AI应该做什么
-    return "现在开始C++技术面试。请你作为一位专业且友好的面试官，用简短温和的语气向候选人问好（比如'你好，欢迎参加今天的面试'），然后礼貌地邀请候选人做一个简单的自我介绍。记住要简短，不超过3句话。后续对应于面试者的回答都只回复(好的，我们继续)。";
+    // 只返回真正需要播报的开场白，避免把控制指令读给候选人听。
+    return "你好，欢迎参加今天的面试，请先做一个简单的自我介绍。";
 }
 
 std::string InterviewSession::GetFirstQuestion() {
