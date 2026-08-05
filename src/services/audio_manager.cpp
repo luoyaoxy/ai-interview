@@ -1,8 +1,16 @@
+/**
+ * @file audio_manager.cpp
+ * @brief 基于 PortAudio 的录音与播放实现。
+ *
+ * 主要模块：设备初始化、输入输出流、PCM 数据读写和资源清理。
+ */
+
 #include "services/audio_manager.h"
 #include "common/logger.h"
 #include <portaudio.h>
 #include <stdexcept>
 #include <cstring>
+#include <limits>
 
 namespace interview {
 namespace services {
@@ -85,9 +93,19 @@ public:
             throw std::runtime_error("No default output device found");
         }
 
+        const PaDeviceInfo* device_info =
+            Pa_GetDeviceInfo(output_parameters.device);
+        if (!device_info) {
+            throw std::runtime_error("Failed to query default output device");
+        }
+
         output_parameters.channelCount = output_config_.channels;
         output_parameters.sampleFormat = paFloat32;  // 32-bit float
-        output_parameters.suggestedLatency = Pa_GetDeviceInfo(output_parameters.device)->defaultLowOutputLatency;
+        // Speech playback values continuity over minimum latency. The former
+        // low-latency + 4800-frame combination was prone to audible stalls on
+        // Windows host APIs and devices that run natively at 48 kHz.
+        output_parameters.suggestedLatency =
+            device_info->defaultHighOutputLatency;
         output_parameters.hostApiSpecificStreamInfo = nullptr;
 
         PaError err = Pa_OpenStream(
@@ -95,7 +113,7 @@ public:
             nullptr,  // 无输入
             &output_parameters,
             output_config_.sample_rate,
-            output_config_.chunk,
+            paFramesPerBufferUnspecified,
             paClipOff,
             nullptr,
             nullptr
@@ -112,9 +130,18 @@ public:
             throw std::runtime_error(std::string("Failed to start output stream: ") + Pa_GetErrorText(err));
         }
 
-        LOG_INFO("Output stream opened: ", output_config_.sample_rate, "Hz, ",
-                 output_config_.channels, " channel(s), ",
-                 output_config_.chunk, " frames/buffer");
+        const PaHostApiInfo* host_info =
+            Pa_GetHostApiInfo(device_info->hostApi);
+        const PaStreamInfo* stream_info = Pa_GetStreamInfo(output_stream_);
+        LOG_INFO(
+            "Output stream opened: device='{}', host='{}', sample_rate={} Hz, channels={}, output_latency={} ms, frames_per_buffer=host-optimal",
+            device_info->name ? device_info->name : "unknown",
+            host_info && host_info->name ? host_info->name : "unknown",
+            stream_info ? stream_info->sampleRate
+                        : static_cast<double>(output_config_.sample_rate),
+            output_config_.channels,
+            stream_info ? stream_info->outputLatency * 1000.0
+                        : output_parameters.suggestedLatency * 1000.0);
     }
 
     std::vector<int16_t> ReadAudio() {
@@ -145,13 +172,41 @@ public:
             return;
         }
 
-        PaError err = Pa_WriteStream(output_stream_, audio.data(),
-                                     audio.size() / output_config_.channels);
+        const size_t frame_count =
+            audio.size() / static_cast<size_t>(output_config_.channels);
+        if (frame_count >
+            static_cast<size_t>(std::numeric_limits<unsigned long>::max())) {
+            throw std::runtime_error("Audio block is too large for PortAudio");
+        }
+
+        PaError err = Pa_WriteStream(
+            output_stream_, audio.data(),
+            static_cast<unsigned long>(frame_count));
 
         if (err == paOutputUnderflowed) {
             LOG_WARNING("Output underflow detected");
         } else if (err != paNoError) {
             throw std::runtime_error(std::string("Failed to write audio: ") + Pa_GetErrorText(err));
+        }
+    }
+
+    void DrainOutputStream() {
+        if (!output_stream_) {
+            return;
+        }
+
+        const PaError active = Pa_IsStreamActive(output_stream_);
+        if (active == 1) {
+            const PaError err = Pa_StopStream(output_stream_);
+            if (err != paNoError) {
+                LOG_WARNING("Failed to drain output stream: {}",
+                            Pa_GetErrorText(err));
+            } else {
+                LOG_INFO("Output stream drained");
+            }
+        } else if (active < 0) {
+            LOG_WARNING("Failed to query output stream state: {}",
+                        Pa_GetErrorText(active));
         }
     }
 
@@ -172,9 +227,14 @@ public:
 
         // 关闭输出流（带错误处理）
         if (output_stream_) {
-            PaError err = Pa_StopStream(output_stream_);
-            if (err != paNoError) {
-                LOG_WARNING("Failed to stop output stream: {}", Pa_GetErrorText(err));
+            PaError err = Pa_IsStreamActive(output_stream_);
+            if (err == 1) {
+                err = Pa_StopStream(output_stream_);
+                if (err != paNoError) {
+                    LOG_WARNING("Failed to stop output stream: {}", Pa_GetErrorText(err));
+                }
+            } else if (err < 0) {
+                LOG_WARNING("Failed to query output stream state: {}", Pa_GetErrorText(err));
             }
             err = Pa_CloseStream(output_stream_);
             if (err != paNoError) {
@@ -224,6 +284,10 @@ std::vector<int16_t> AudioDeviceManager::ReadAudio() {
 
 void AudioDeviceManager::WriteAudio(const std::vector<float>& audio) {
     pimpl_->WriteAudio(audio);
+}
+
+void AudioDeviceManager::DrainOutputStream() {
+    pimpl_->DrainOutputStream();
 }
 
 void AudioDeviceManager::Cleanup() {

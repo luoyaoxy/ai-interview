@@ -1,3 +1,10 @@
+/**
+ * @file interview_state.cpp
+ * @brief 全局面试状态机实现。
+ *
+ * 主要模块：线程安全的状态读写、状态变更通知、复位和名称转换。
+ */
+
 #include "common/interview_state.h"
 #include "common/logger.h"
 

@@ -1,3 +1,10 @@
+/**
+ * @file config_dialog.cpp
+ * @brief 新建面试会话配置对话框的实现。
+ *
+ * 主要模块：候选人信息、简历选择、题目数量设置和输入校验。
+ */
+
 #include "ui/config_dialog.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>

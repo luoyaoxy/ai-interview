@@ -1,3 +1,10 @@
+/**
+ * @file interview_manager.cpp
+ * @brief 单次面试的题目、回答、评分与报告管理实现。
+ *
+ * 主要模块：默认/简历题目生成、问答推进、追问判断和报告持久化。
+ */
+
 #include "interview/interview_manager.h"
 #include "common/logger.h"
 #include "services/llm_client.h"
@@ -20,6 +27,8 @@ struct InterviewRecord {
     std::string timestamp;
     int score;
     std::string feedback;
+    bool knowledge_base_used = false;
+    std::vector<std::string> reference_sources;
 
     nlohmann::json ToJson() const {
         nlohmann::json j;
@@ -30,6 +39,8 @@ struct InterviewRecord {
         j["timestamp"] = timestamp;
         j["score"] = score;
         j["feedback"] = feedback;
+        j["knowledge_base_used"] = knowledge_base_used;
+        j["reference_sources"] = reference_sources;
         return j;
     }
 };
@@ -63,15 +74,18 @@ public:
     std::unique_ptr<services::LLMClient> llm_client;
 
     std::string followup_question;
+    std::string active_followup_question;
     std::string summary_text;
-    bool has_followed_up; 
+    bool has_followed_up;
+    bool awaiting_followup_answer;
 
     InterviewSessionImpl(const std::string& name)
         : candidate_name(name)
         , max_questions(8)
         , total_score(0)
         , current_question_index(0)
-        , has_followed_up(false) {
+        , has_followed_up(false)
+        , awaiting_followup_answer(false) {
         start_time = std::time(nullptr);
         llm_client = std::make_unique<services::LLMClient>();
     }
@@ -182,6 +196,8 @@ std::string InterviewSession::GetNextQuestion() {
         // 移到下一个问题索引
         pimpl_->current_question_index++;
         pimpl_->has_followed_up = false;  // 重置追问标志，进入新问题
+        pimpl_->awaiting_followup_answer = false;
+        pimpl_->active_followup_question.clear();
 
         if (pimpl_->current_question_index >= pimpl_->max_questions) {
             return "";  // 所有问题已问完
@@ -201,28 +217,37 @@ std::string InterviewSession::GetFollowUpQuestion() {
     if (!pimpl_->followup_question.empty()) {
         std::string question = pimpl_->followup_question;
         pimpl_->followup_question.clear();
+        pimpl_->active_followup_question = question;
         pimpl_->has_followed_up = true;
+        pimpl_->awaiting_followup_answer = true;
         return "追问：" + question;
     }
     return "";
 }
 
-void InterviewSession::RecordAnswer(const std::string& answer) {
+void InterviewSession::RecordAnswer(
+    const std::string& answer,
+    const std::string& reference_context,
+    const std::vector<std::string>& reference_sources) {
     InterviewRecord record;
     record.answer = answer;
     record.timestamp = pimpl_->GetCurrentTime();
+    record.knowledge_base_used = !reference_context.empty();
+    record.reference_sources = reference_sources;
 
     if (!pimpl_->llm_questions.empty() &&
         pimpl_->current_question_index < pimpl_->max_questions) {
 
         auto& q = pimpl_->llm_questions[pimpl_->current_question_index];
-        // 根据是否已有followup_question判断是否是追问
-        bool is_followup = !pimpl_->followup_question.empty();
+        const bool is_followup = pimpl_->awaiting_followup_answer;
         
         if (!is_followup) {
             record.question = q["question"].get<std::string>();
         } else {
-            record.question = "追问 - " + q["question"].get<std::string>();
+            record.question = "追问 - " +
+                (pimpl_->active_followup_question.empty()
+                    ? q["question"].get<std::string>()
+                    : pimpl_->active_followup_question);
         }
         
         record.category = q.value("category", "general");
@@ -231,7 +256,8 @@ void InterviewSession::RecordAnswer(const std::string& answer) {
         // 使用LLM评分（同时判断是否需要追问）
         try {
             LOG_DEBUG("Evaluating answer with LLM...");
-            auto llm_eval = pimpl_->llm_client->EvaluateAnswer(record.question, answer);
+            auto llm_eval = pimpl_->llm_client->EvaluateAnswer(
+                record.question, answer, reference_context);
             record.score = llm_eval["score"].get<int>();
             record.feedback = llm_eval["feedback"].get<std::string>();
 
@@ -246,6 +272,11 @@ void InterviewSession::RecordAnswer(const std::string& answer) {
             record.feedback = "评分失败，给予中等分数";
             pimpl_->followup_question.clear();
         }
+
+        if (is_followup) {
+            pimpl_->awaiting_followup_answer = false;
+            pimpl_->active_followup_question.clear();
+        }
     } else {
         LOG_WARNING("RecordAnswer called but no current question available");
         return;  // 无当前问题，不记录
@@ -256,6 +287,18 @@ void InterviewSession::RecordAnswer(const std::string& answer) {
 
     LOG_INFO("Answer recorded - Score: {} ({}), Total records: {}", 
              record.score, record.feedback, pimpl_->records.size());
+}
+
+std::string InterviewSession::GetCurrentQuestionText() const {
+    if (pimpl_->llm_questions.empty() ||
+        pimpl_->current_question_index < 0 ||
+        pimpl_->current_question_index >= pimpl_->max_questions ||
+        pimpl_->current_question_index >=
+            static_cast<int>(pimpl_->llm_questions.size())) {
+        return "";
+    }
+    return pimpl_->llm_questions[pimpl_->current_question_index]
+        .value("question", "");
 }
 
 int InterviewSession::GetLastScore() const {

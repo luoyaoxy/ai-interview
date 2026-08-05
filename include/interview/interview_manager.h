@@ -218,7 +218,13 @@ public:
      *
      * @param answer 候选人的回答文本（ASR识别结果）
      */
-    void RecordAnswer(const std::string& answer);
+    void RecordAnswer(
+        const std::string& answer,
+        const std::string& reference_context = "",
+        const std::vector<std::string>& reference_sources = {});
+
+    /// @brief 获取当前正在回答的正式面试题文本。
+    std::string GetCurrentQuestionText() const;
 
     /**
      * @brief 获取最后一次回答的分数

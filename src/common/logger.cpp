@@ -1,3 +1,10 @@
+/**
+ * @file logger.cpp
+ * @brief 全局日志系统初始化与访问实现。
+ *
+ * 主要模块：控制台输出、文件输出、日志级别和格式配置。
+ */
+
 #include "common/logger.h"
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>

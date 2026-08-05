@@ -1,7 +1,18 @@
+/**
+ * @file mainwindow.cpp
+ * @brief 主窗口的界面装配与业务协调。
+ *
+ * 主要模块：菜单和工具栏、面试页、知识库页、会话状态同步与消息展示。
+ */
+
 #include "ui/mainwindow.h"
 #include "ui/config_dialog.h"
+#include "ui/knowledge_base_widget.h"
+#include "ui/knowledge_chat_widget.h"
 #include "interview/dialog_session.h"
 #include "common/logger.h"
+#include "common/config.h"
+#include "services/rag_client.h"
 #include <QMenuBar>
 #include <QToolBar>
 #include <QStatusBar>
@@ -46,12 +57,12 @@ MainWindow::~MainWindow() {
     // 取消注册状态机回调
     common::InterviewStateMachine::Instance().ClearStateChangeCallback();
     
-    if (session_ && session_->IsRunning()) {
-        session_->Stop();
-    }
-    
     if (session_thread_.joinable()) {
         session_thread_.join();
+    }
+
+    if (session_) {
+        session_->Stop();
     }
 }
 
@@ -106,8 +117,16 @@ void MainWindow::SetupToolBar() {
 
 void MainWindow::SetupCentralWidget() {
     QWidget* central = centralWidget();
-    QVBoxLayout* layout = new QVBoxLayout(central);
-    
+    QVBoxLayout* main_layout = new QVBoxLayout(central);
+    main_layout->setContentsMargins(0, 0, 0, 0);
+
+    // === 标签页 ===
+    tab_widget_ = new QTabWidget(this);
+
+    // --- 面试页面 ---
+    QWidget* interview_page = new QWidget(this);
+    QVBoxLayout* layout = new QVBoxLayout(interview_page);
+
     // 状态栏
     status_label_ = new QLabel("就绪", this);
     status_label_->setStyleSheet(
@@ -121,7 +140,7 @@ void MainWindow::SetupCentralWidget() {
         "}"
     );
     layout->addWidget(status_label_);
-    
+
     // 消息显示区域
     message_area_ = new QTextEdit(this);
     message_area_->setReadOnly(true);
@@ -157,7 +176,7 @@ void MainWindow::SetupCentralWidget() {
         "}"
     );
     layout->addWidget(message_area_, 1);
-    
+
     // 进度条
     progress_bar_ = new QProgressBar(this);
     progress_bar_->setRange(0, 10);
@@ -179,7 +198,28 @@ void MainWindow::SetupCentralWidget() {
         "}"
     );
     layout->addWidget(progress_bar_);
-    
+
+    tab_widget_->addTab(interview_page, "面试");
+
+    // --- 知识库页面（第七步新增） ---
+    kb_widget_ = new KnowledgeBaseWidget(this);
+    tab_widget_->addTab(kb_widget_, "知识库");
+
+    // --- 基于当前启用知识库的连续文字问答页面 ---
+    knowledge_chat_widget_ = new KnowledgeChatWidget(this);
+    tab_widget_->addTab(knowledge_chat_widget_, "AI 面试助手");
+
+    connect(kb_widget_, &KnowledgeBaseWidget::activeKnowledgeBaseChanged,
+            knowledge_chat_widget_,
+            &KnowledgeChatWidget::OnActiveKnowledgeBaseChanged);
+    connect(kb_widget_, &KnowledgeBaseWidget::knowledgeBaseUpdated,
+            knowledge_chat_widget_,
+            [this](const QString&) {
+                knowledge_chat_widget_->RefreshKnowledgeBaseStatus();
+            });
+
+    main_layout->addWidget(tab_widget_);
+
     // 状态栏
     statusBar()->showMessage("就绪");
 }
@@ -217,6 +257,16 @@ void MainWindow::OnStartSession() {
         return;
     }
     
+    // A finished std::thread remains joinable. Reassigning it would call
+    // std::terminate(), which caused the second interview to close the app.
+    if (session_thread_.joinable()) {
+        session_thread_.join();
+    }
+    if (session_) {
+        session_->Stop();
+        session_.reset();
+    }
+
     // 禁用按钮，防止重复点击
     start_button_->setEnabled(false);
     new_session_button_->setEnabled(false);
@@ -254,36 +304,60 @@ void MainWindow::OnStartSession() {
         statusBar()->showMessage("正在生成问题中...");
     }
     
+    const std::string rag_knowledge_base_id =
+        (rag_backend_ && kb_widget_)
+            ? kb_widget_->GetActiveKnowledgeBaseID().toStdString()
+            : std::string{};
+
+    const std::string candidate_name = candidate_name_.toStdString();
+    const std::string resume_path = resume_path_.toStdString();
+    const int min_questions = min_questions_;
+
+    // Construct and publish the session on the UI thread. The worker only
+    // performs blocking configuration and connection work on this stable object.
+    session_ = std::make_unique<session::DialogSession>(candidate_name);
+    session_->SetSessionMode(session::SessionMode::StructuredInterview);
+    if (rag_backend_ && !rag_knowledge_base_id.empty()) {
+        session_->SetRAGBackend(rag_backend_, rag_knowledge_base_id);
+    }
+    session_->SetDialogContentCallback(
+        [this](const std::string& role,
+               const std::string& text,
+               int question_index) {
+            QMetaObject::invokeMethod(
+                this,
+                [this, role, text, question_index]() {
+                    if (role == "interviewer") {
+                        AppendMessage(
+                            QString("🎙️ 【面试官】：%1\n")
+                                .arg(QString::fromStdString(text)),
+                            "#0066cc");
+                        progress_bar_->setValue(question_index);
+                    } else if (role == "candidate") {
+                        AppendMessage(
+                            QString("👤 【候选人】：%1\n")
+                                .arg(QString::fromStdString(text)),
+                            "#009688");
+                    }
+                },
+                Qt::QueuedConnection);
+        });
+    session::DialogSession* const session = session_.get();
+
     // 启动会话线程
-    session_thread_ = std::thread([this]() {
+    session_thread_ = std::thread(
+        [this, session, resume_path, min_questions]() {
         try {
-            session_ = std::make_unique<session::DialogSession>(candidate_name_.toStdString());
-            
-            // 设置对话内容回调
-            session_->SetDialogContentCallback(
-                [this](const std::string& role, const std::string& text, int question_index) {
-                    // 切换到主线程更新UI
-                    QMetaObject::invokeMethod(this, [this, role, text, question_index]() {
-                        if (role == "interviewer") {
-                            AppendMessage(QString("🎙️ 【面试官】：%1\n").arg(QString::fromStdString(text)), "#0066cc");
-                            progress_bar_->setValue(question_index);
-                        } else if (role == "candidate") {
-                            AppendMessage(QString("👤 【候选人】：%1\n").arg(QString::fromStdString(text)), "#009688");
-                        }
-                    }, Qt::QueuedConnection);
-                }
-            );
-            
             // 配置简历面试
-            if (!resume_path_.isEmpty()) {
-                session_->ConfigureResumeInterview(resume_path_.toStdString(), min_questions_);
+            if (!resume_path.empty()) {
+                session->ConfigureResumeInterview(resume_path, min_questions);
             } else {
-                session_->ConfigureDefaultInterview(min_questions_); 
+                session->ConfigureDefaultInterview(min_questions);
             }
-            
+
             // 启动会话
-            session_->Start();
-            
+            session->Start();
+
         } catch (const std::exception& e) {
             // 在主线程显示错误
             QMetaObject::invokeMethod(this, [this, error = std::string(e.what())]() {
@@ -295,7 +369,7 @@ void MainWindow::OnStartSession() {
                 new_session_button_->setEnabled(true);
             }, Qt::QueuedConnection);
         }
-    });
+        });
 }
 
 void MainWindow::OnStateChangedFromMachine(InterviewState old_state, InterviewState new_state) {
@@ -403,6 +477,24 @@ void MainWindow::AppendMessage(const QString& text, const QString& color) {
     message_area_->insertHtml(html_text);
     message_area_->moveCursor(QTextCursor::End);
     message_area_->ensureCursorVisible();
+}
+
+// ============================================================
+// 独立 RAG 服务注入
+// ============================================================
+void MainWindow::SetRAGBackend(
+    std::shared_ptr<services::RagBackend> rag_backend) {
+    rag_backend_ = std::move(rag_backend);
+
+    if (kb_widget_) {
+        kb_widget_->SetService(rag_backend_);
+    }
+    if (knowledge_chat_widget_) {
+        knowledge_chat_widget_->SetService(rag_backend_);
+    }
+
+    LOG_INFO("RAG backend injected into MainWindow: {}",
+             rag_backend_->GetBackendName());
 }
 
 } // namespace ui

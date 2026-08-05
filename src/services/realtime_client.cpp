@@ -1,3 +1,10 @@
+/**
+ * @file realtime_client.cpp
+ * @brief 实时语音服务 WebSocket 客户端实现。
+ *
+ * 主要模块：TLS 连接、会话请求、音频与文本发送、响应接收和资源关闭。
+ */
+
 #include "services/realtime_client.h"
 #include "common/logger.h"
 #include "common/config.h"
@@ -9,6 +16,7 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/ssl/stream.hpp>
 #include <nlohmann/json.hpp>
+#include <atomic>
 #include <thread>
 #include <random>
 #include <sstream>
@@ -200,7 +208,9 @@ public:
             return common::Protocol::ParseResponse(data);
 
         } catch (const std::exception& e) {
-            LOG_ERROR("Failed to receive response: ", e.what());
+            if (running_) {
+                LOG_ERROR("Failed to receive response: {}", e.what());
+            }
             throw;
         }
     }
@@ -237,7 +247,8 @@ public:
                 LOG_WARNING("Failed to send FinishSession: {}", e.what());
             }
 
-            // 发送FinishConnection
+            // 发送 FinishConnection，但不要在此同步读取响应。接收线程是
+            // WebSocket 的唯一 reader；双重 read 曾导致结束时阻塞 30 秒。
             try {
                 SendFinishConnection();
                 LOG_DEBUG("FinishConnection sent");
@@ -245,15 +256,16 @@ public:
                 LOG_WARNING("Failed to send FinishConnection: {}", e.what());
             }
 
-            // 关闭WebSocket
-            if (ws_) {
-                boost::system::error_code ec;
-                ws_->close(websocket::close_code::normal, ec);
-                if (ec) {
-                    LOG_WARNING("WebSocket close error: {}", ec.message());
-                }
-            }
             connected_ = false;
+
+            // 协议结束消息已发送，直接关闭底层传输以唤醒阻塞中的接收线程。
+            if (ws_) {
+                boost::system::error_code shutdown_error;
+                auto& socket = ws_->next_layer().next_layer();
+                socket.shutdown(tcp::socket::shutdown_both, shutdown_error);
+                boost::system::error_code close_error;
+                socket.close(close_error);
+            }
 
             if (receive_thread_.joinable()) {
                 receive_thread_.join();
@@ -360,16 +372,6 @@ private:
         auto message = common::Protocol::BuildFullRequest(common::events::FINISH_CONNECTION, "", payload);
 
         ws_->write(net::buffer(message));
-
-        // 接收响应
-        beast::flat_buffer resp_buffer;
-        ws_->read(resp_buffer);
-
-        std::vector<uint8_t> resp_data(resp_buffer.size());
-        net::buffer_copy(net::buffer(resp_data), resp_buffer.data());
-
-        auto response = common::Protocol::ParseResponse(resp_data);
-        LOG_INFO("FinishConnection response event: ", response.event);
     }
 
     void ReceiveLoop() {
@@ -390,7 +392,9 @@ private:
                 }
 
             } catch (const std::exception& e) {
-                LOG_ERROR("Receive loop error: ", e.what());
+                if (running_) {
+                    LOG_ERROR("Receive loop error: {}", e.what());
+                }
                 running_ = false;
                 break;
             }
@@ -414,8 +418,8 @@ private:
     tcp::resolver resolver_;
     std::unique_ptr<websocket::stream<beast::ssl_stream<tcp::socket>>> ws_;
 
-    bool connected_;
-    bool running_;
+    std::atomic<bool> connected_;
+    std::atomic<bool> running_;
     std::thread receive_thread_;
     ResponseCallback callback_;
 };

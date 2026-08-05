@@ -1,3 +1,10 @@
+/**
+ * @file protocol.h
+ * @brief 实时语音服务的二进制协议类型与编解码接口。
+ *
+ * 模块划分：事件常量、消息枚举、协议数据结构和数据包工具。
+ */
+
 #pragma once
 
 #include <cstdint>

@@ -1,0 +1,742 @@
+openapi: 3.0.3
+info:
+  title: AI Interview RAG Service API
+  version: 0.2.0
+  description: 独立 RAG 服务与 C++/Qt AI 面试客户端之间的 HTTP 契约。
+servers:
+  - url: http://127.0.0.1:8000
+    description: Local development
+tags:
+  - name: Health
+  - name: KnowledgeBases
+  - name: Documents
+  - name: RAG
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: 检查服务及关键依赖状态
+      operationId: getHealth
+      security: []
+      responses:
+        '200':
+          description: 服务可以响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: 服务不可用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /api/v1/knowledge-bases:
+    post:
+      tags: [KnowledgeBases]
+      summary: 创建知识库
+      operationId: createKnowledgeBase
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateKnowledgeBaseRequest'
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeBaseResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      tags: [KnowledgeBases]
+      summary: 分页列出知识库
+      operationId: listKnowledgeBases
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeBasePage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v1/knowledge-bases/{knowledge_base_id}:
+    parameters:
+      - $ref: '#/components/parameters/KnowledgeBaseId'
+      - $ref: '#/components/parameters/RequestIdHeader'
+    get:
+      tags: [KnowledgeBases]
+      summary: 获取知识库详情
+      operationId: getKnowledgeBase
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeBaseResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [KnowledgeBases]
+      summary: 更新知识库元数据
+      operationId: updateKnowledgeBase
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateKnowledgeBaseRequest'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeBaseResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      tags: [KnowledgeBases]
+      summary: 删除知识库及其文档和向量
+      operationId: deleteKnowledgeBase
+      responses:
+        '204':
+          description: 删除成功
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/knowledge-bases/{knowledge_base_id}/documents:
+    parameters:
+      - $ref: '#/components/parameters/KnowledgeBaseId'
+      - $ref: '#/components/parameters/RequestIdHeader'
+    post:
+      tags: [Documents]
+      summary: 上传文档并异步处理
+      operationId: uploadDocument
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                display_name:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+      responses:
+        '202':
+          description: 文档已接收并进入处理队列
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+    get:
+      tags: [Documents]
+      summary: 分页列出知识库文档
+      operationId: listDocuments
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Cursor'
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/DocumentStatus'
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/knowledge-bases/{knowledge_base_id}/documents/{document_id}:
+    parameters:
+      - $ref: '#/components/parameters/KnowledgeBaseId'
+      - $ref: '#/components/parameters/DocumentId'
+      - $ref: '#/components/parameters/RequestIdHeader'
+    get:
+      tags: [Documents]
+      summary: 获取文档详情和处理状态
+      operationId: getDocument
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Documents]
+      summary: 删除文档、文档块和向量
+      operationId: deleteDocument
+      responses:
+        '204':
+          description: 删除成功
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/rag/search:
+    post:
+      tags: [RAG]
+      summary: 检索相关文档块但不调用 LLM
+      operationId: searchKnowledgeBase
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+      responses:
+        '200':
+          description: 检索完成，包括没有命中的正常结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          $ref: '#/components/responses/UpstreamError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /api/v1/rag/query:
+    post:
+      tags: [RAG]
+      summary: 检索知识并生成最终回答
+      operationId: queryRag
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RagQueryRequest'
+      responses:
+        '200':
+          description: 回答完成，包括没有命中知识的正常结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RagQueryResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '502':
+          $ref: '#/components/responses/UpstreamError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /api/v1/rag/conversations/{conversation_id}:
+    delete:
+      tags: [RAG]
+      summary: 清空 RAG 对话历史
+      operationId: clearRagConversation
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+        - $ref: '#/components/parameters/RequestIdHeader'
+      responses:
+        '204':
+          description: 已清空；会话不存在时也返回 204
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: API key
+  parameters:
+    RequestIdHeader:
+      name: X-Request-ID
+      in: header
+      required: false
+      description: 客户端提供的链路追踪 ID
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    KnowledgeBaseId:
+      name: knowledge_base_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    DocumentId:
+      name: document_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    ConversationId:
+      name: conversation_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    PageSize:
+      name: page_size
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        maxLength: 512
+  responses:
+    BadRequest:
+      description: 请求字段或参数无效
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: 缺少或无效的认证信息
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: 请求的资源不存在
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: 资源名称、内容或状态冲突
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PayloadTooLarge:
+      description: 上传文件超过服务端限制
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnsupportedMediaType:
+      description: 不支持的文件类型
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    TooManyRequests:
+      description: 请求频率超限
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: 建议重试等待秒数
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: 服务内部错误
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UpstreamError:
+      description: Embedding 或 LLM 上游响应无效
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unavailable:
+      description: 向量库或关键依赖暂时不可用
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    GatewayTimeout:
+      description: 上游处理超时
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, service, version, time, dependencies]
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        service:
+          type: string
+          example: rag-service
+        version:
+          type: string
+          example: 1.0.0
+        time:
+          type: string
+          format: date-time
+        dependencies:
+          type: object
+          required: [embedding, vector_store, llm]
+          properties:
+            embedding:
+              $ref: '#/components/schemas/DependencyStatus'
+            vector_store:
+              $ref: '#/components/schemas/DependencyStatus'
+            llm:
+              $ref: '#/components/schemas/DependencyStatus'
+    DependencyStatus:
+      type: string
+      enum: [healthy, unhealthy, unknown]
+    RoleType:
+      type: string
+      enum: [default, interviewer, general_assistant, custom]
+    CreateKnowledgeBaseRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        description:
+          type: string
+          maxLength: 2000
+          default: ''
+        role_type:
+          $ref: '#/components/schemas/RoleType'
+    UpdateKnowledgeBaseRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        description:
+          type: string
+          maxLength: 2000
+        role_type:
+          $ref: '#/components/schemas/RoleType'
+    KnowledgeBase:
+      type: object
+      required:
+        - id
+        - name
+        - description
+        - role_type
+        - document_count
+        - chunk_count
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        role_type:
+          $ref: '#/components/schemas/RoleType'
+        document_count:
+          type: integer
+          minimum: 0
+        chunk_count:
+          type: integer
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    KnowledgeBaseResponse:
+      type: object
+      required: [request_id, knowledge_base]
+      properties:
+        request_id:
+          type: string
+        knowledge_base:
+          $ref: '#/components/schemas/KnowledgeBase'
+    KnowledgeBasePage:
+      type: object
+      required: [request_id, items, total]
+      properties:
+        request_id:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/KnowledgeBase'
+        next_cursor:
+          type: string
+          nullable: true
+        total:
+          type: integer
+          minimum: 0
+    DocumentStatus:
+      type: string
+      enum: [queued, processing, ready, failed]
+    Document:
+      type: object
+      required:
+        - id
+        - knowledge_base_id
+        - file_name
+        - status
+        - chunk_count
+        - error_message
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        knowledge_base_id:
+          type: string
+        file_name:
+          type: string
+        status:
+          $ref: '#/components/schemas/DocumentStatus'
+        chunk_count:
+          type: integer
+          minimum: 0
+        error_message:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    DocumentResponse:
+      type: object
+      required: [request_id, document]
+      properties:
+        request_id:
+          type: string
+        document:
+          $ref: '#/components/schemas/Document'
+    DocumentPage:
+      type: object
+      required: [request_id, items, total]
+      properties:
+        request_id:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Document'
+        next_cursor:
+          type: string
+          nullable: true
+        total:
+          type: integer
+          minimum: 0
+    Source:
+      type: object
+      required:
+        - document_id
+        - document_name
+        - chunk_id
+        - content
+        - score
+      properties:
+        document_id:
+          type: string
+        document_name:
+          type: string
+        chunk_id:
+          type: string
+        content:
+          type: string
+        score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        page:
+          type: integer
+          minimum: 1
+          nullable: true
+    SearchRequest:
+      type: object
+      additionalProperties: false
+      required: [question, knowledge_base_id]
+      properties:
+        question:
+          type: string
+          minLength: 1
+          maxLength: 16000
+        knowledge_base_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        top_k:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 3
+        similarity_threshold:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          default: 0.7
+    SearchResponse:
+      type: object
+      required: [request_id, knowledge_found, sources]
+      properties:
+        request_id:
+          type: string
+        knowledge_found:
+          type: boolean
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/Source'
+    RagQueryRequest:
+      type: object
+      additionalProperties: false
+      required: [question, knowledge_base_id]
+      properties:
+        question:
+          type: string
+          minLength: 1
+          maxLength: 16000
+        knowledge_base_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        conversation_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        role_type:
+          $ref: '#/components/schemas/RoleType'
+    RagQueryResponse:
+      type: object
+      required:
+        - request_id
+        - conversation_id
+        - knowledge_found
+        - answer
+        - sources
+      properties:
+        request_id:
+          type: string
+        conversation_id:
+          type: string
+        knowledge_found:
+          type: boolean
+        answer:
+          type: string
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/Source'
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: KNOWLEDGE_BASE_NOT_FOUND
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+    ErrorResponse:
+      type: object
+      required: [request_id, error]
+      properties:
+        request_id:
+          type: string
+        error:
+          $ref: '#/components/schemas/Error'

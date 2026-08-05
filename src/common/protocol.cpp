@@ -1,3 +1,10 @@
+/**
+ * @file protocol.cpp
+ * @brief 实时对话二进制协议的编解码实现。
+ *
+ * 主要模块：协议头生成、响应解析、Gzip 压缩和请求数据包构建。
+ */
+
 #include "common/protocol.h"
 #include <zlib.h>
 #include <stdexcept>

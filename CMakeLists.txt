@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(CppInterviewSystem VERSION 1.0 LANGUAGES CXX)
+include(CTest)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,15 +37,16 @@ find_package(portaudio CONFIG REQUIRED)
 find_package(CURL REQUIRED)
 find_package(podofo CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
+find_package(unofficial-sqlite3 CONFIG REQUIRED)
 
 # Qt依赖（必需，vcpkg的qtbase是Qt6）
-find_package(Qt6 COMPONENTS Core Widgets Gui QUIET)
+find_package(Qt6 COMPONENTS Core Widgets Gui Concurrent QUIET)
 if(Qt6_FOUND)
     set(QT_VERSION_MAJOR 6)
     message(STATUS "Found Qt6")
 else()
     # 尝试Qt5
-    find_package(Qt5 COMPONENTS Core Widgets Gui QUIET)
+    find_package(Qt5 COMPONENTS Core Widgets Gui Concurrent QUIET)
     if(Qt5_FOUND)
         set(QT_VERSION_MAJOR 5)
         message(STATUS "Found Qt5")
@@ -56,6 +58,7 @@ endif()
 set(COMMON_SOURCES
     src/common/logger.cpp
     src/common/config.cpp
+    src/common/http_client.cpp
     src/common/protocol.cpp
     src/common/interview_state.cpp
 )
@@ -64,6 +67,13 @@ set(SERVICES_SOURCES
     src/services/audio_manager.cpp
     src/services/llm_client.cpp
     src/services/pdf_parser.cpp
+    src/services/embedding_client.cpp
+    src/services/vector_store.cpp
+    src/services/document_loader.cpp
+    src/services/rag_prompt_builder.cpp
+    src/services/rag_client.cpp
+    src/services/local_rag_backend.cpp
+    src/services/rag_comparison.cpp
 )
 set(INTERVIEW_SOURCES
     src/interview/interview_manager.cpp
@@ -72,10 +82,14 @@ set(INTERVIEW_SOURCES
 set(UI_SOURCES
     src/ui/mainwindow.cpp
     src/ui/config_dialog.cpp
+    src/ui/knowledge_base_widget.cpp
+    src/ui/knowledge_chat_widget.cpp
 )
 set(UI_HEADERS
     include/ui/mainwindow.h
     include/ui/config_dialog.h
+    include/ui/knowledge_base_widget.h
+    include/ui/knowledge_chat_widget.h
 )
 
 set(MAIN_SOURCES
@@ -135,11 +149,58 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     podofo::podofo
     # 日志
     spdlog::spdlog
+    # SQLite（向量存储）
+    unofficial::sqlite3::sqlite3
     # Qt界面
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::Widgets
     Qt${QT_VERSION_MAJOR}::Gui
+    Qt${QT_VERSION_MAJOR}::Concurrent
 )
+
+option(BUILD_RAG_COMPARISON_TOOL
+    "Build the local/remote RAG comparison command-line tool" ON)
+
+if(BUILD_RAG_COMPARISON_TOOL)
+    add_executable(RagComparisonTool
+        src/tools/rag_compare.cpp
+        src/common/config.cpp
+        src/common/http_client.cpp
+        src/common/logger.cpp
+        src/services/document_loader.cpp
+        src/services/embedding_client.cpp
+        src/services/llm_client.cpp
+        src/services/local_rag_backend.cpp
+        src/services/pdf_parser.cpp
+        src/services/rag_client.cpp
+        src/services/rag_comparison.cpp
+        src/services/rag_prompt_builder.cpp
+        src/services/vector_store.cpp
+    )
+    target_include_directories(RagComparisonTool PRIVATE ${INCLUDE_DIRS})
+    target_link_libraries(RagComparisonTool PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        nlohmann_json::nlohmann_json
+        ZLIB::ZLIB
+        CURL::libcurl
+        podofo::podofo
+        spdlog::spdlog
+        unofficial::sqlite3::sqlite3
+    )
+    if(WIN32)
+        target_link_libraries(RagComparisonTool PRIVATE ws2_32 wsock32)
+    endif()
+    if(MSVC)
+        target_compile_options(RagComparisonTool PRIVATE
+            /W4 /utf-8 /permissive- /Zc:__cplusplus
+        )
+    else()
+        target_compile_options(RagComparisonTool PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+endif()
 
 if(WIN32)
     target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32 wsock32)
@@ -189,3 +250,43 @@ if(WIN32)
 endif()
 
 install(TARGETS ${PROJECT_NAME} DESTINATION bin)
+
+if(BUILD_TESTING)
+    add_executable(DocumentLoaderMarkdownTest
+        tests/document_loader_markdown_test.cpp
+        src/services/document_loader.cpp
+        src/services/pdf_parser.cpp
+        src/common/logger.cpp
+    )
+    target_include_directories(DocumentLoaderMarkdownTest PRIVATE ${INCLUDE_DIRS})
+    target_link_libraries(DocumentLoaderMarkdownTest PRIVATE
+        nlohmann_json::nlohmann_json
+        podofo::podofo
+        spdlog::spdlog
+    )
+    if(MSVC)
+        target_compile_options(DocumentLoaderMarkdownTest PRIVATE
+            /W4 /utf-8 /permissive- /Zc:__cplusplus
+        )
+    endif()
+    add_test(
+        NAME DocumentLoaderMarkdownHeadingBoundary
+        COMMAND DocumentLoaderMarkdownTest
+    )
+
+    add_executable(RagComparisonTest
+        tests/rag_comparison_test.cpp
+        src/services/rag_comparison.cpp
+    )
+    target_include_directories(RagComparisonTest PRIVATE ${INCLUDE_DIRS})
+    if(MSVC)
+        target_compile_options(RagComparisonTest PRIVATE
+            /W4 /utf-8 /permissive- /Zc:__cplusplus
+        )
+    else()
+        target_compile_options(RagComparisonTest PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+    add_test(NAME RagBackendParallelComparison COMMAND RagComparisonTest)
+endif()

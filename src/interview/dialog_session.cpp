@@ -1,6 +1,14 @@
+/**
+ * @file dialog_session.cpp
+ * @brief 语音面试会话的核心协调实现。
+ *
+ * 主要模块：服务初始化、音频线程、实时事件处理、状态切换和 RAG 问答。
+ */
+
 #include "interview/dialog_session.h"
 #include "services/audio_manager.h"
 #include "services/realtime_client.h"
+#include "services/rag_client.h"
 #include "interview/interview_manager.h"
 #include "common/config.h"
 #include "common/logger.h"
@@ -14,6 +22,7 @@
 #include <cstdint>
 #include <sstream>
 #include <string>
+#include <utility>
 
 namespace interview {
 namespace session {
@@ -26,6 +35,51 @@ std::int64_t SteadyClockMilliseconds() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
         .count();
+}
+
+void ReplaceAll(std::string& text,
+                const std::string& from,
+                const std::string& to) {
+    if (from.empty()) {
+        return;
+    }
+
+    size_t position = 0;
+    while ((position = text.find(from, position)) != std::string::npos) {
+        text.replace(position, from.size(), to);
+        position += to.size();
+    }
+}
+
+// End-to-end TTS can skip punctuation-heavy programming identifiers. Keep the
+// UI text unchanged, but provide a speech-friendly version to the voice model.
+std::string MakeSpeechFriendlyText(std::string text) {
+    const std::pair<const char*, const char*> replacements[] = {
+        {"C++11", "C加加十一"},
+        {"C++14", "C加加十四"},
+        {"C++17", "C加加十七"},
+        {"C++20", "C加加二十"},
+        {"C++", "C加加"},
+        {"const限定符", "常量限定符"},
+        {"std::shared_ptr", "S T D shared pointer"},
+        {"std::unique_ptr", "S T D unique pointer"},
+        {"std::weak_ptr", "S T D weak pointer"},
+        {"shared_ptr", "shared pointer"},
+        {"unique_ptr", "unique pointer"},
+        {"weak_ptr", "weak pointer"},
+        {"make_shared", "make shared"},
+        {"make_unique", "make unique"},
+        {"enable_shared_from_this", "enable shared from this"},
+        {"push_back", "push back"},
+        {"emplace_back", "emplace back"},
+        {"std::", "S T D"},
+        {"RAII", "R A I I"}
+    };
+
+    for (const auto& replacement : replacements) {
+        ReplaceAll(text, replacement.first, replacement.second);
+    }
+    return text;
 }
 
 } // namespace
@@ -46,6 +100,14 @@ public:
     std::atomic<bool> final_summary_tts_started;
     std::atomic<bool> final_summary_tts_ended;
     std::atomic<std::int64_t> last_tts_activity_ms;
+    // A prompt must not be treated as finished before its TTS_START arrives.
+    std::atomic<bool> prompt_tts_pending;
+    // Only one final ASR result may claim each candidate-answer window.
+    std::atomic<bool> awaiting_candidate_answer;
+    std::atomic<bool> answer_processing;
+    std::atomic<std::size_t> tts_received_samples;
+    std::atomic<std::size_t> tts_written_samples;
+    std::atomic<unsigned int> tts_starvation_count;
 
     // 待处理的答案
     std::string pending_answer;
@@ -54,11 +116,17 @@ public:
     std::string final_summary;
     std::mutex final_summary_mutex;
 
+    // RAG 服务（第七步新增）
+    std::shared_ptr<services::RagBackend> rag_backend_;
+    std::string rag_knowledge_base_id_;
+    SessionMode session_mode_ = SessionMode::StructuredInterview;
+
     // 对话内容回调
     DialogSession::DialogContentCallback dialog_content_callback;
 
     std::thread microphone_thread;
     std::thread playback_thread;
+    std::thread stop_thread;
 
     std::queue<std::vector<float>> audio_queue;
     size_t queued_audio_samples;
@@ -75,6 +143,12 @@ public:
         , final_summary_tts_started(false)
         , final_summary_tts_ended(false)
         , last_tts_activity_ms(0)
+        , prompt_tts_pending(false)
+        , awaiting_candidate_answer(false)
+        , answer_processing(false)
+        , tts_received_samples(0)
+        , tts_written_samples(0)
+        , tts_starvation_count(0)
         , queued_audio_samples(0) {
 
         interview_session = std::make_shared<InterviewSession>(name);
@@ -85,6 +159,13 @@ public:
 
     ~DialogSessionImpl() {
         Stop();
+    }
+
+    void JoinStopThread() {
+        if (stop_thread.joinable() &&
+            stop_thread.get_id() != std::this_thread::get_id()) {
+            stop_thread.join();
+        }
     }
 
     void TransitionToState(common::InterviewState new_state) {
@@ -160,12 +241,12 @@ public:
     }
 
     void Stop() {
-        if (!is_running) {
+        if (!is_running.exchange(false)) {
+            JoinStopThread();
             return;
         }
 
         LOG_INFO("Stopping dialog session");
-        is_running = false;
 
         audio_queue_cv.notify_all();
 
@@ -241,6 +322,7 @@ public:
 
             std::vector<float> audio_float(float_data, float_data + float_count);
             last_tts_activity_ms = SteadyClockMilliseconds();
+            tts_received_samples += audio_float.size();
 
             // LOG_DEBUG("Received audio: {} bytes = {} float32 samples", response.payload_bytes.size(), float_count);
 
@@ -285,6 +367,12 @@ public:
             // a nesting counter, otherwise one missing TTS_END blocks forever.
             const int previous_tts_count = tts_cnt.exchange(1);
             last_tts_activity_ms = SteadyClockMilliseconds();
+            prompt_tts_pending = false;
+            if (previous_tts_count == 0) {
+                tts_received_samples = 0;
+                tts_written_samples = 0;
+                tts_starvation_count = 0;
+            }
             if (previous_tts_count > 0) {
                 LOG_WARNING("Duplicate TTS_START received; keeping TTS active");
             }
@@ -321,7 +409,7 @@ public:
         // Event USER_START_SPEAKING: 用户开始说话
         else if (event == common::events::USER_START_SPEAKING) {
             // 如果面试官正在说话，忽略此事件（可能是误触发）
-            if (is_playing_audio) {
+            if (is_playing_audio || !awaiting_candidate_answer) {
                 LOG_WARNING("[忽略] USER_START_SPEAKING during TTS playback (likely false trigger)");
                 return;
             }
@@ -340,8 +428,9 @@ public:
         // Event ASR_RESULT: ASR识别结果
         else if (event == common::events::ASR_RESULT && !payload.empty()) {
             // 如果面试官正在说话，忽略ASR结果（应该是静音数据的误识别）
-            if (is_playing_audio) {
-                LOG_DEBUG("[忽略] ASR_RESULT during TTS playback");
+            if (is_playing_audio || !awaiting_candidate_answer ||
+                answer_processing) {
+                LOG_DEBUG("[忽略] ASR_RESULT outside candidate-answer window");
                 return;
             }
             
@@ -352,6 +441,14 @@ public:
                 std::string text = result.value("text", std::string());
 
                 if (is_final) {
+                    bool expected = true;
+                    if (!awaiting_candidate_answer.compare_exchange_strong(
+                            expected, false)) {
+                        LOG_DEBUG("[忽略] Duplicate final ASR result");
+                        return;
+                    }
+                    answer_processing = true;
+
                     // The server will automatically produce its own answer for
                     // this audio turn. Keep ASR text, but mute that answer; the
                     // application will send exactly one selected question next.
@@ -377,7 +474,7 @@ public:
         // Event USER_STOP_SPEAKING: 用户说话结束
         else if (event == common::events::USER_STOP_SPEAKING) {
             // 如果面试官正在说话，忽略此事件（可能是误触发）
-            if (is_playing_audio) {
+            if (is_playing_audio || !awaiting_candidate_answer) {
                 LOG_WARNING("[忽略] USER_STOP_SPEAKING during TTS playback (likely false trigger)");
                 return;
             }
@@ -404,7 +501,8 @@ public:
                 // 准备要发送的音频数据
                 std::vector<uint8_t> audio_bytes(audio_data.size() * 2);
 
-                if (!is_playing_audio) {
+                if (!is_playing_audio && awaiting_candidate_answer &&
+                    !answer_processing) {
                     // 面试官不说话时：发送真实的麦克风录音
                     std::memcpy(audio_bytes.data(), audio_data.data(), audio_bytes.size());
                 } else {
@@ -419,7 +517,8 @@ public:
                 static auto last_log_time = std::chrono::steady_clock::now();
                 auto now = std::chrono::steady_clock::now();
                 if (std::chrono::duration_cast<std::chrono::seconds>(now - last_log_time).count() >= 5) {
-                    if (!is_playing_audio) {
+                    if (!is_playing_audio && awaiting_candidate_answer &&
+                        !answer_processing) {
                         LOG_DEBUG("Microphone active - sending real audio data");
                     } else {
                         LOG_DEBUG("Microphone muted - sending silence data");
@@ -441,16 +540,23 @@ public:
     void PlaybackThreadFunc() {
         LOG_INFO("Playback thread started");
 
-        constexpr size_t kPrebufferMilliseconds = 150;
+        constexpr size_t kPromptPrebufferMilliseconds = 2000;
+        constexpr size_t kFinalSummaryPrebufferMilliseconds = 2000;
         const auto& output_config = common::Config::Instance().output_audio_config;
-        const size_t prebuffer_samples =
+        const size_t prompt_prebuffer_samples =
             static_cast<size_t>(output_config.sample_rate) *
             static_cast<size_t>(output_config.channels) *
-            kPrebufferMilliseconds / 1000;
+            kPromptPrebufferMilliseconds / 1000;
+        const size_t final_summary_prebuffer_samples =
+            static_cast<size_t>(output_config.sample_rate) *
+            static_cast<size_t>(output_config.channels) *
+            kFinalSummaryPrebufferMilliseconds / 1000;
         bool playback_buffer_ready = false;
 
-        LOG_INFO("Playback prebuffer: {} ms ({} samples)",
-                 kPrebufferMilliseconds, prebuffer_samples);
+        LOG_INFO(
+            "Playback prebuffer: {} ms for prompts; {} ms for final summary",
+            kPromptPrebufferMilliseconds,
+            kFinalSummaryPrebufferMilliseconds);
 
         while (is_running) {
             std::vector<float> audio_data;
@@ -458,17 +564,25 @@ public:
 
             {
                 std::unique_lock<std::mutex> lock(audio_queue_mutex);
-                audio_queue_cv.wait_for(lock, common::timing::AUDIO_QUEUE_WAIT, [this, &playback_buffer_ready, prebuffer_samples]() {
+                const bool queue_ready = audio_queue_cv.wait_for(lock, common::timing::AUDIO_QUEUE_WAIT, [this, &playback_buffer_ready, prompt_prebuffer_samples, final_summary_prebuffer_samples]() {
                     if (!is_running) {
                         return true;
                     }
                     if (audio_queue.empty()) {
                         return false;
                     }
+                    const size_t required_samples = stop_after_final_summary
+                        ? final_summary_prebuffer_samples
+                        : prompt_prebuffer_samples;
                     return playback_buffer_ready ||
-                           queued_audio_samples >= prebuffer_samples ||
-                           tts_cnt == 0;
+                           queued_audio_samples >= required_samples ||
+                           (tts_cnt == 0 && !prompt_tts_pending);
                 });
+
+                if (!queue_ready && playback_buffer_ready && tts_cnt > 0) {
+                    ++tts_starvation_count;
+                    LOG_WARNING("TTS audio stream starved while playback was active");
+                }
 
                 if (!is_running) {
                     break;
@@ -497,22 +611,33 @@ public:
                     }
                 }
 
+                const size_t required_samples = stop_after_final_summary
+                    ? final_summary_prebuffer_samples
+                    : prompt_prebuffer_samples;
                 const bool enough_audio =
                     playback_buffer_ready ||
-                    queued_audio_samples >= prebuffer_samples ||
-                    tts_cnt == 0;
+                    queued_audio_samples >= required_samples ||
+                    (tts_cnt == 0 && !prompt_tts_pending);
 
                 if (!audio_queue.empty() && enough_audio) {
                     playback_buffer_ready = true;
+                    const size_t batch_samples = queued_audio_samples;
                     audio_data = std::move(audio_queue.front());
                     audio_queue.pop();
-                    queued_audio_samples -= audio_data.size();
+                    audio_data.reserve(batch_samples);
 
-                    // If streaming audio temporarily runs dry, rebuild a small
-                    // jitter buffer before resuming playback.
-                    if (audio_queue.empty() && tts_cnt > 0) {
-                        playback_buffer_ready = false;
+                    // Merge every packet currently available into one
+                    // contiguous PortAudio write. The realtime service emits
+                    // many small packets; writing each one separately can
+                    // produce sub-second discontinuities that do not register
+                    // as PortAudio underflows.
+                    while (!audio_queue.empty()) {
+                        const auto& packet = audio_queue.front();
+                        audio_data.insert(
+                            audio_data.end(), packet.begin(), packet.end());
+                        audio_queue.pop();
                     }
+                    queued_audio_samples = 0;
                 } else {
                     queue_empty = true;
                 }
@@ -521,35 +646,56 @@ public:
             if (!audio_data.empty()) {
                 try {
                     audio_manager->WriteAudio(audio_data);
+                    tts_written_samples += audio_data.size();
                 } catch (const std::exception& e) {
                     LOG_ERROR("Playback error: {}", e.what());
                 }
             }
 
-            if (queue_empty && tts_cnt == 0) {
+            if (queue_empty && tts_cnt == 0 && !prompt_tts_pending) {
                 playback_buffer_ready = false;
                 bool was_playing_audio = is_playing_audio.exchange(false);
+                const bool opens_answer_window =
+                    was_playing_audio &&
+                    !answer_processing &&
+                    !stop_after_final_summary;
 
                 if (was_playing_audio) {
+                    LOG_INFO(
+                        "TTS playback stats: received={} samples, written={} samples, starvations={}",
+                        tts_received_samples.load(),
+                        tts_written_samples.load(),
+                        tts_starvation_count.load());
+                }
+
+                if (opens_answer_window) {
                     LOG_INFO("[面试官说完了，请候选人回答] - 麦克风已恢复录音");
                     TransitionToState(common::InterviewState::kIdle);
                 }
 
                 // The final summary is complete only after the server has sent
                 // TTS_END and every queued audio block has been written to the
-                // output stream. Stop from another thread because Stop() joins
-                // this playback thread.
+                // output stream. A managed stop thread performs cleanup because
+                // Stop() joins this playback thread. It remains joinable so the
+                // owner can fully reclaim the old session before starting anew.
                 if (stop_after_final_summary &&
                     final_summary_tts_started &&
                     final_summary_tts_ended) {
                     stop_after_final_summary = false;
+                    if (audio_manager) {
+                        audio_manager->DrainOutputStream();
+                    }
                     LOG_INFO("Final summary playback completed; stopping dialog session");
                     TransitionToState(common::InterviewState::kSessionEnding);
-                    std::thread([this]() {
+                    stop_thread = std::thread([this]() {
                         Stop();
                         TransitionToState(common::InterviewState::kCompleted);
-                    }).detach();
+                    });
                     return;
+                }
+
+                if (opens_answer_window) {
+                    awaiting_candidate_answer = true;
                 }
 
                 // 检查是否有待处理的答案
@@ -583,6 +729,30 @@ public:
             return;
         }
 
+        if (session_mode_ == SessionMode::KnowledgeChat) {
+            if (common::Config::Instance().IsRAGEnabled() &&
+                rag_backend_ && !rag_knowledge_base_id_.empty()) {
+                const auto response = rag_backend_->Ask(
+                    answer_to_process,
+                    rag_knowledge_base_id_,
+                    "general_assistant");
+                if (response.success) {
+                    SendNextPrompt(response.answer);
+                } else {
+                    LOG_WARNING("Remote RAG query failed: {}",
+                                response.error_message);
+                    answer_processing = false;
+                    awaiting_candidate_answer = true;
+                }
+            } else {
+                LOG_WARNING(
+                    "KnowledgeChat requested but RAG chat services are unavailable");
+                answer_processing = false;
+                awaiting_candidate_answer = true;
+            }
+            return;
+        }
+
         // 处理开场白后的自我介绍
         if (!is_intro_done) {
             is_intro_done = true;
@@ -591,8 +761,51 @@ public:
             return;
         }
 
-        // 记录回答并评分
-        interview_session->RecordAnswer(answer_to_process);
+        // RAG 只为评分提供参考资料，不能替代原有面试状态机。
+        std::string reference_context;
+        std::vector<std::string> reference_sources;
+        if (common::Config::Instance().IsRAGEnabled() &&
+            rag_backend_ && !rag_knowledge_base_id_.empty()) {
+            try {
+                const auto& rag = common::Config::Instance().GetRAGConfig();
+                const std::string question =
+                    interview_session->GetCurrentQuestionText();
+                if (!question.empty()) {
+                    const auto search = rag_backend_->Search(
+                        question,
+                        rag_knowledge_base_id_,
+                        rag.top_k,
+                        rag.similarity_threshold);
+                    if (!search.success) {
+                        throw std::runtime_error(search.error_message);
+                    }
+                    if (search.knowledge_found) {
+                        std::ostringstream context;
+                        for (size_t i = 0; i < search.sources.size(); ++i) {
+                            const auto& source = search.sources[i];
+                            context << "[参考资料 " << (i + 1)
+                                    << "，相似度 " << source.score << "]\n"
+                                    << source.content << "\n\n";
+                            reference_sources.push_back(source.document_name);
+                        }
+                        reference_context = context.str();
+                        LOG_INFO(
+                            "RAG scoring context prepared: {} source(s)",
+                            search.sources.size());
+                    }
+                }
+            } catch (const std::exception& e) {
+                // RAG 故障时继续使用原有 DeepSeek 评分，面试不中断。
+                LOG_WARNING(
+                    "RAG retrieval failed; falling back to standard scoring: {}",
+                    e.what());
+                reference_context.clear();
+                reference_sources.clear();
+            }
+        }
+
+        interview_session->RecordAnswer(
+            answer_to_process, reference_context, reference_sources);
         
         // 判断是否需要追问
         std::string next_prompt;
@@ -614,23 +827,30 @@ public:
             final_summary_tts_started = false;
             final_summary_tts_ended = false;
             stop_after_final_summary = true;
-            SendNextPrompt(summary);
+            SendNextPrompt(
+                summary,
+                "本次面试已经结束，完整总结已显示在界面中，感谢您的参与。");
             return;
         }
 
         SendNextPrompt(next_prompt);
     }
     
-    void SendNextPrompt(const std::string& prompt) {
+    void SendNextPrompt(
+        const std::string& prompt,
+        const std::string& speech_prompt = {}) {
         // Audio produced from this explicit text query is the one response that
         // should be audible and displayed to the candidate.
         suppress_autonomous_tts = false;
+        awaiting_candidate_answer = false;
+        answer_processing = false;
         is_playing_audio = true;
         int qidx = interview_session ? interview_session->GetCurrentQuestionIndex() + 1 : 1;
         if (dialog_content_callback) {
             dialog_content_callback("interviewer", prompt, qidx);
         }
-        SendInterviewerPrompt(prompt);
+        SendInterviewerPrompt(
+            speech_prompt.empty() ? prompt : speech_prompt);
     }
 
     void SendInterviewerPrompt(const std::string& text) {
@@ -643,8 +863,11 @@ public:
             return;
         }
         
-        // 再发送到服务器进行TTS
-        realtime_client->SendTextQuery(text);
+        // 再发送到服务器进行TTS。界面保留技术术语原文，朗读文本则
+        // 规避下划线、双冒号和加号等容易被语音模型跳过的符号。
+        prompt_tts_pending = true;
+        last_tts_activity_ms = SteadyClockMilliseconds();
+        realtime_client->SendTextQuery(MakeSpeechFriendlyText(text));
     }
 
     void LogMultilineBlock(const std::string& title, const std::string& text) const {
@@ -669,6 +892,19 @@ DialogSession::DialogSession(const std::string& candidate_name)
     : pimpl_(std::make_unique<DialogSessionImpl>(candidate_name)) {}
 
 DialogSession::~DialogSession() = default;
+
+void DialogSession::SetRAGBackend(
+    std::shared_ptr<services::RagBackend> rag_backend,
+    const std::string& knowledge_base_id) {
+    pimpl_->rag_backend_ = std::move(rag_backend);
+    pimpl_->rag_knowledge_base_id_ = knowledge_base_id;
+    LOG_INFO("RAG backend injected into DialogSession: {}",
+             pimpl_->rag_backend_->GetBackendName());
+}
+
+void DialogSession::SetSessionMode(SessionMode mode) {
+    pimpl_->session_mode_ = mode;
+}
 
 void DialogSession::ConfigureResumeInterview(const std::string& resume_pdf_path, int min_questions) {
     pimpl_->interview_session->LoadQuestionsFromResume(resume_pdf_path, min_questions);
