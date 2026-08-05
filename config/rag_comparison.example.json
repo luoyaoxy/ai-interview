@@ -1,0 +1,11 @@
+{
+  "config_path": "config/default_config.json",
+  "local_knowledge_base_id": "1",
+  "remote_knowledge_base_id": "请替换为远程知识库ID",
+  "question": "什么是虚函数？",
+  "top_k": 3,
+  "similarity_threshold": 0.7,
+  "document_path": "",
+  "document_name": "",
+  "output_path": "rag_comparison_report.json"
+}

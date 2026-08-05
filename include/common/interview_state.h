@@ -1,3 +1,10 @@
+/**
+ * @file interview_state.h
+ * @brief 面试状态枚举及线程安全的全局状态机接口。
+ *
+ * 模块划分：状态定义、变更回调、状态切换和状态名称查询。
+ */
+
 #pragma once
 
 #include <string>

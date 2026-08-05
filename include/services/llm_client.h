@@ -80,14 +80,14 @@ public:
     /**
      * @brief 构造函数
      *
-     * 创建LLM客户端实例，初始化HTTP库(libcurl)。
+     * 创建 LLM 客户端实例，网络资源由通用 HttpClient 模块管理。
      */
     LLMClient();
 
     /**
      * @brief 析构函数
      *
-     * 清理HTTP库资源。
+     * 清理客户端内部资源。
      */
     ~LLMClient();
 
@@ -102,7 +102,9 @@ public:
      * @return LLM的回复文本
      * @throws std::runtime_error API调用失败或解析失败
      */
-    std::string SendMessage(const std::string& message, const std::string& system_prompt = "");
+    std::string SendMessage(const std::string& message,
+                            const std::string& system_prompt = "",
+                            int max_tokens_override = -1);
 
     /**
      * @brief 发送多轮对话并获取回复
@@ -112,7 +114,7 @@ public:
      *
      * 工作流程：
      * 1. 构建请求JSON(包含model, temperature, messages等)
-     * 2. 使用libcurl发送POST请求到LLM API
+     * 2. 使用通用 HttpClient 模块发送 POST 请求到 LLM API
      * 3. 解析响应JSON
      * 4. 提取assistant的回复文本
      *
@@ -120,7 +122,8 @@ public:
      * @return LLM的回复文本
      * @throws std::runtime_error API调用失败或解析失败
      */
-    std::string SendConversation(const std::vector<Message>& messages);
+    std::string SendConversation(const std::vector<Message>& messages,
+                                 int max_tokens_override = -1);
 
     /**
      * @brief 解析简历内容并生成面试问题
@@ -189,7 +192,10 @@ public:
      * @return JSON对象，包含score(分数)、feedback(反馈)、need_followup(是否追问)等
      * @throws std::runtime_error LLM调用失败，返回默认评分(50分)
      */
-    nlohmann::json EvaluateAnswer(const std::string& question, const std::string& answer);
+    nlohmann::json EvaluateAnswer(
+        const std::string& question,
+        const std::string& answer,
+        const std::string& reference_context = "");
 
     /**
      * @brief 生成面试总结和建议
@@ -221,6 +227,40 @@ public:
      */
     nlohmann::json GenerateSummary(const nlohmann::json& interview_records,
                                    const std::string& resume_text = "");
+
+    // ========================================================
+    // RAG 对话接口（第四步新增）
+    // ========================================================
+
+    /**
+     * @brief RAG 增强对话
+     *
+     * 将 RAG Prompt Builder 构建的系统提示和用户问题组合发往 LLM。
+     * 自动管理多轮对话历史，保持上下文连贯性。
+     *
+     * @param system_prompt 经过 RAG 增强的 System Prompt（来自 RAGPromptBuilder）
+     * @param user_prompt 用户当前问题
+     * @return LLM 回复文本
+     */
+    std::string ChatWithRAG(const std::string& system_prompt,
+                            const std::string& user_prompt);
+
+    /**
+     * @brief 清空对话历史
+     *
+     * 切换知识库或角色时调用，避免上一轮对话的上下文干扰。
+     */
+    void ClearConversationHistory();
+
+    /**
+     * @brief 设置最大历史轮数
+     *
+     * 控制保留最近 N 轮对话历史。
+     * 超过限制时自动丢弃最早的轮次。
+     *
+     * @param max_turns 最大保留轮数，默认 5
+     */
+    void SetMaxHistoryTurns(int max_turns);
 
 private:
     class LLMClientImpl;

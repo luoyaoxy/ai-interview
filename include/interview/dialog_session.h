@@ -21,8 +21,16 @@
 #include "common/protocol.h"
 
 namespace interview {
+namespace services {
+    class RagBackend;
+}
+
 namespace session {
 
+enum class SessionMode {
+    StructuredInterview,
+    KnowledgeChat
+};
 
 /**
  * @brief 对话会话管理类
@@ -138,6 +146,19 @@ public:
      * @param callback 回调函数，参数为(role, text, question_index)
      */
     void SetDialogContentCallback(DialogContentCallback callback);
+
+    /**
+     * @brief 设置 RAG 服务（第七步新增）
+     *
+     * 注入独立 RAG 服务客户端及当前知识库。
+     * 仅在 Config::IsRAGEnabled() 时需要调用。
+     */
+    void SetRAGBackend(
+        std::shared_ptr<services::RagBackend> rag_backend,
+        const std::string& knowledge_base_id);
+
+    /// @brief 设置会话模式；默认保持原有结构化面试流程。
+    void SetSessionMode(SessionMode mode);
 
     /**
      * @brief 停止会话

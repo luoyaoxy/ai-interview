@@ -145,8 +145,8 @@ public:
      * - 声道数：1（单声道）
      * - 格式：paFloat32（32位浮点）
      * - 采样率：24000 Hz（匹配TTS输出）
-     * - 缓冲区：4800帧（200ms @ 24kHz）
-     * - 延迟：低延迟模式
+     * - 缓冲区：由 PortAudio/Windows Host API 选择最优帧大小
+     * - 延迟：稳定播放模式（使用设备建议的高可靠性输出延迟）
      *
      * @throws std::runtime_error 没有输出设备或打开失败
      */
@@ -210,6 +210,13 @@ public:
      * @throws std::runtime_error 输出流未打开或写入失败
      */
     void WriteAudio(const std::vector<float>& audio);
+
+    /**
+     * @brief 等待输出设备播放完已经提交的全部音频
+     *
+     * 仅在最终总结播放结束时调用，避免会话关闭截断最后几个字。
+     */
+    void DrainOutputStream();
 
     /**
      * @brief 清理资源

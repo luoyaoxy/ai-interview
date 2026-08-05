@@ -53,5 +53,41 @@
                 "temperature":  0.3,
                 "max_tokens":  32000,
                 "timeout_seconds":  60
-            }
+            },
+    "rag":  {
+                "use_remote_rag":  true,
+                "service_url":  "http://127.0.0.1:8000",
+                "api_key":  "",
+                "timeout_seconds":  60,
+                "verify_ssl":  true,
+                "max_retries":  2,
+                "retry_delay_ms":  500,
+                "embedding_provider":  "ollama",
+                "embedding_api_url":  "http://127.0.0.1:11434/api/embed",
+                "embedding_model":  "qwen3-embedding:0.6b",
+                "vector_db_path":  "./knowledge_base/vectors.db",
+                "chunk_size":  500,
+                "chunk_overlap":  50,
+                "max_history_turns":  5,
+                "enabled":  true,
+                "top_k":  3,
+                "similarity_threshold":  0.7
+            },
+    "roles":  {
+                  "default":  "interviewer",
+                  "presets":  {
+                                  "interviewer":  {
+                                                      "name":  "专业面试官",
+                                                      "description":  "你是一位资深技术面试官，负责评估候选人的技术能力和综合素质。你需要根据参考知识库中的岗位要求和技术标准来提问和评估。",
+                                                      "style":  "专业严谨，温和但不失锐度",
+                                                      "fallback":  "抱歉，我在当前知识库中没有找到相关岗位标准，请问能否提供更多信息？"
+                                                  },
+                                  "general_assistant":  {
+                                                            "name":  "AI 面试助手",
+                                                            "description":  "你是一位技术面试学习助手，只根据当前启用知识库中的参考资料回答问题，帮助用户进行面试复习。不得编造知识库中不存在的内容。",
+                                                            "style":  "专业准确，简洁清晰，保留标准技术术语",
+                                                            "fallback":  "当前知识库中没有检索到与该问题相关的内容，请调整问题表述或上传相关技术资料后重试。"
+                                                        }
+                              }
+              }
 }

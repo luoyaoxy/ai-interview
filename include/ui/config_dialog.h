@@ -1,3 +1,10 @@
+/**
+ * @file config_dialog.h
+ * @brief 新建面试会话配置对话框接口。
+ *
+ * 模块划分：候选人/简历输入、题目数量读取和表单校验。
+ */
+
 #pragma once
 
 #include <QDialog>

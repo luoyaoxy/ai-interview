@@ -1,3 +1,10 @@
+/**
+ * @file pdf_parser.cpp
+ * @brief PDF 文本提取与格式校验实现。
+ *
+ * 主要模块：文档加载、逐页文本提取和异常处理。
+ */
+
 #include "services/pdf_parser.h"
 #include "common/logger.h"
 #include <podofo/podofo.h>

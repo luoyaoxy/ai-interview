@@ -6,6 +6,11 @@ vcpkg_installed/
 *.log
 interview_report_*.json
 
+# 本地知识库与 SQLite 运行数据
+knowledge_base/
+*.db-wal
+*.db-shm
+
 # 本地环境和密钥
 .env
 .env.*

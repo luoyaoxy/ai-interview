@@ -1,3 +1,10 @@
+/**
+ * @file config.h
+ * @brief 项目各子系统的配置结构与全局配置入口。
+ *
+ * 模块划分：时序、音频、实时对话、LLM、RAG、角色预设和配置管理。
+ */
+
 #pragma once
 
 #include <string>
@@ -196,6 +203,55 @@ struct LLMConfig {
 };
 
 /**
+ * @brief RAG（检索增强生成）配置结构（第六步新增）
+ *
+ * 配置知识库检索增强的所有参数。
+ *
+ * 当 enabled=false 时，系统保持原有面试模式不变（向后兼容）。
+ *
+ * 关键参数：
+ * - service_url: 独立 RAG 服务的根地址
+ * - api_key: RAG 服务 Bearer 认证密钥
+ * - max_retries / retry_delay_ms: 安全请求的指数退避重试参数
+ * - top_k / similarity_threshold: 知识库页面“检索测试”的参数
+ * - use_remote_rag: true 使用独立服务，false 临时回退旧本地链路
+ *
+ * 文档解析、Embedding、分块和向量库配置均由独立 RAG 服务管理。
+ */
+struct RAGConfig {
+    std::string service_url = "http://127.0.0.1:8000";
+    std::string api_key;
+    std::string embedding_provider = "ollama";
+    std::string embedding_api_url = "http://127.0.0.1:11434/api/embed";
+    std::string embedding_model = "qwen3-embedding:0.6b";
+    std::string vector_db_path = "./knowledge_base/vectors.db";
+    long timeout_seconds = 60;
+    long retry_delay_ms = 500;
+    int chunk_size = 500;
+    int chunk_overlap = 50;
+    int top_k = 3;
+    int max_retries = 2;
+    int max_history_turns = 5;
+    float similarity_threshold = 0.7f;
+    bool enabled = true;
+    bool verify_ssl = true;
+    bool use_remote_rag = true;
+};
+
+/**
+ * @brief 角色预设配置结构（第六步新增）
+ *
+ * 定义一个可选的系统角色的全部参数。
+ * 配置文件可覆盖内置预设（kInterviewerRole 等）。
+ */
+struct RolePreset {
+    std::string name;           ///< 角色名称
+    std::string description;    ///< 角色职责描述
+    std::string style;          ///< 回复风格
+    std::string fallback;       ///< 知识库无匹配时的兜底回复
+};
+
+/**
  * @brief 全局配置管理类（单例模式）
  *
  * 统一管理系统所有配置参数，确保全局唯一的配置实例。
@@ -213,6 +269,8 @@ struct LLMConfig {
  * 4. TTS配置：语音合成参数
  * 5. ASR配置：语音识别VAD参数
  * 6. LLM配置：大模型API参数
+ * 7. RAG配置：知识库检索增强参数（第六步新增）
+ * 8. 角色预设：多套角色模板（第六步新增）
  *
  * 使用方式：
  * @code
@@ -289,6 +347,40 @@ public:
      */
     void ValidateConfiguration() const;
 
+    // ========================================================
+    // RAG 配置接口（第六步新增）
+    // ========================================================
+
+    /// @brief 获取 RAG 配置（只读）
+    const RAGConfig& GetRAGConfig() const { return rag_config_; }
+
+    /// @brief 是否启用 RAG 模式
+    bool IsRAGEnabled() const { return rag_config_.enabled; }
+
+    // ========================================================
+    // 角色管理（第六步新增）
+    // ========================================================
+
+    /// @brief 获取默认角色标识
+    const std::string& GetDefaultRole() const { return default_role_; }
+
+    /// @brief 获取所有角色预设
+    const std::map<std::string, RolePreset>& GetRolePresets() const {
+        return role_presets_;
+    }
+
+    /// @brief 根据 key 查找角色预设，失败返回 nullptr
+    const RolePreset* GetRolePreset(const std::string& key) const;
+
+    /// @brief 获取所有角色 key（用于 UI 下拉框）
+    std::vector<std::string> GetRoleKeys() const;
+
+    /// @brief 运行时切换角色
+    void SetActiveRole(const std::string& role_key);
+
+    /// @brief 获取当前活跃角色标识
+    std::string GetActiveRole() const { return active_role_; }
+
 private:
     /**
      * @brief 私有构造函数
@@ -302,6 +394,23 @@ private:
 
     /// @brief 禁用赋值操作，防止覆盖实例
     Config& operator=(const Config&) = delete;
+
+    // RAG 配置
+    RAGConfig rag_config_;
+
+    // 角色预设
+    std::string default_role_;
+    std::string active_role_;
+    std::map<std::string, RolePreset> role_presets_;
+
+    /// @brief 从 JSON 解析 RAG 配置段
+    void LoadRAGConfig(const nlohmann::json& json);
+
+    /// @brief 从 JSON 解析角色预设段
+    void LoadRolesConfig(const nlohmann::json& json);
+
+    /// @brief 加载内置角色预设（配置文件无 roles 段时使用）
+    void LoadBuiltInRoles();
 };
 
 } // namespace common

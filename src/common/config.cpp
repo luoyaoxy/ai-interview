@@ -1,3 +1,10 @@
+/**
+ * @file config.cpp
+ * @brief 应用配置的加载、校验与运行时访问实现。
+ *
+ * 主要模块：JSON 配置解析、环境变量覆盖、RAG/角色配置和会话请求生成。
+ */
+
 #include "common/config.h"
 #include "common/utils.h"
 #include <cstdlib>
@@ -22,14 +29,57 @@ Config::Config() = default;
 
 namespace {
 
+bool TryGetEnvironment(const char* variable_name, std::string& result) {
+#ifdef _WIN32
+    char* value = nullptr;
+    std::size_t length = 0;
+    if (_dupenv_s(&value, &length, variable_name) != 0 || value == nullptr) {
+        return false;
+    }
+    result.assign(value);
+    std::free(value);
+    return !result.empty();
+#else
+    const char* value = std::getenv(variable_name);
+    if (value == nullptr || value[0] == '\0') return false;
+    result.assign(value);
+    return true;
+#endif
+}
+
 std::string GetEnvironmentOrDefault(
     const char* variable_name,
     const std::string& default_value) {
-    const char* value = std::getenv(variable_name);
-    if (value != nullptr && value[0] != '\0') {
-        return std::string(value);
-    }
+    std::string value;
+    if (TryGetEnvironment(variable_name, value)) return value;
     return default_value;
+}
+
+long GetEnvironmentLongOrDefault(
+    const char* variable_name,
+    long default_value) {
+    std::string value;
+    if (!TryGetEnvironment(variable_name, value)) return default_value;
+    try {
+        std::size_t parsed = 0;
+        const long result = std::stol(value, &parsed);
+        if (parsed != value.size()) throw std::invalid_argument("trailing data");
+        return result;
+    } catch (const std::exception&) {
+        throw std::runtime_error(
+            std::string("Invalid integer environment variable: ") + variable_name);
+    }
+}
+
+bool GetEnvironmentBoolOrDefault(
+    const char* variable_name,
+    bool default_value) {
+    std::string text;
+    if (!TryGetEnvironment(variable_name, text)) return default_value;
+    if (text == "1" || text == "true" || text == "TRUE") return true;
+    if (text == "0" || text == "false" || text == "FALSE") return false;
+    throw std::runtime_error(
+        std::string("Invalid boolean environment variable: ") + variable_name);
 }
 
 template <typename T>
@@ -136,6 +186,12 @@ void Config::LoadFromFile(const std::string& path) {
     llm_config.max_tokens = Require<int>(llm, "max_tokens");
     llm_config.timeout_seconds = Require<int>(llm, "timeout_seconds");
 
+    // RAG 配置（第六步新增，可选段）
+    LoadRAGConfig(root);
+
+    // 角色预设（第六步新增，可选段）
+    LoadRolesConfig(root);
+
     // 验证配置参数有效性
     ValidateConfiguration();
 }
@@ -196,6 +252,51 @@ void Config::ValidateConfiguration() const {
     if (asr_config.vad_speech_trigger_duration < 50 || asr_config.vad_speech_trigger_duration > 5000) {
         throw std::runtime_error("VAD speech trigger duration must be between 50ms and 5000ms");
     }
+
+    if (rag_config_.enabled) {
+        if (rag_config_.use_remote_rag) {
+            if (rag_config_.service_url.empty() ||
+                (rag_config_.service_url.rfind("http://", 0) != 0 &&
+                 rag_config_.service_url.rfind("https://", 0) != 0)) {
+                throw std::runtime_error(
+                    "RAG service_url must start with http:// or https://");
+            }
+            if (rag_config_.timeout_seconds <= 0 ||
+                rag_config_.timeout_seconds > 600) {
+                throw std::runtime_error(
+                    "RAG timeout_seconds must be between 1 and 600");
+            }
+            if (rag_config_.max_retries < 0 || rag_config_.max_retries > 5) {
+                throw std::runtime_error("RAG max_retries must be between 0 and 5");
+            }
+            if (rag_config_.retry_delay_ms < 0 ||
+                rag_config_.retry_delay_ms > 30000) {
+                throw std::runtime_error(
+                    "RAG retry_delay_ms must be between 0 and 30000");
+            }
+        } else {
+            if (rag_config_.embedding_api_url.empty() ||
+                rag_config_.embedding_model.empty()) {
+                throw std::runtime_error(
+                    "Local RAG embedding configuration cannot be empty");
+            }
+            if (rag_config_.chunk_size <= 0 || rag_config_.chunk_overlap < 0 ||
+                rag_config_.chunk_overlap >= rag_config_.chunk_size) {
+                throw std::runtime_error("Invalid local RAG chunk configuration");
+            }
+            if (rag_config_.vector_db_path.empty()) {
+                throw std::runtime_error("Local RAG vector_db_path cannot be empty");
+            }
+        }
+        if (rag_config_.top_k <= 0) {
+            throw std::runtime_error("RAG top_k must be greater than 0");
+        }
+        if (rag_config_.similarity_threshold < 0.0f ||
+            rag_config_.similarity_threshold > 1.0f) {
+            throw std::runtime_error(
+                "RAG similarity_threshold must be between 0.0 and 1.0");
+        }
+    }
 }
 
 nlohmann::json Config::GenerateStartSessionRequest() const {
@@ -225,5 +326,132 @@ nlohmann::json Config::GenerateStartSessionRequest() const {
     return request;
 }
 
-} // namespace common 
+// ============================================================
+// RAG 配置解析（第六步新增）
+// ============================================================
+void Config::LoadRAGConfig(const nlohmann::json& json) {
+    if (!json.contains("rag")) {
+        rag_config_.enabled = false;
+        return;
+    }
+
+    const auto& rag = json["rag"];
+    rag_config_.service_url = GetEnvironmentOrDefault(
+        "RAG_SERVICE_URL",
+        rag.value("service_url", "http://127.0.0.1:8000"));
+    const std::string configured_api_key = rag.value(
+        "api_key", rag.value("service_api_key", std::string{}));
+    rag_config_.api_key = GetEnvironmentOrDefault(
+        "RAG_API_KEY",
+        GetEnvironmentOrDefault("RAG_SERVICE_API_KEY", configured_api_key));
+    const long configured_timeout = rag.value(
+        "timeout_seconds", rag.value("service_timeout_seconds", 60L));
+    rag_config_.timeout_seconds = GetEnvironmentLongOrDefault(
+        "RAG_TIMEOUT_SECONDS", configured_timeout);
+    rag_config_.retry_delay_ms = GetEnvironmentLongOrDefault(
+        "RAG_RETRY_DELAY_MS", rag.value("retry_delay_ms", 500L));
+    rag_config_.max_retries = static_cast<int>(GetEnvironmentLongOrDefault(
+        "RAG_MAX_RETRIES", rag.value("max_retries", 2)));
+    rag_config_.enabled = rag.value("enabled", true);
+    rag_config_.verify_ssl = GetEnvironmentBoolOrDefault(
+        "RAG_VERIFY_SSL",
+        rag.value("verify_ssl", rag.value("service_verify_ssl", true)));
+    rag_config_.use_remote_rag = GetEnvironmentBoolOrDefault(
+        "RAG_USE_REMOTE",
+        rag.value("use_remote_rag", true));
+    rag_config_.embedding_provider = rag.value("embedding_provider", "ollama");
+    rag_config_.embedding_api_url = rag.value(
+        "embedding_api_url", "http://127.0.0.1:11434/api/embed");
+    rag_config_.embedding_model = rag.value(
+        "embedding_model", "qwen3-embedding:0.6b");
+    rag_config_.vector_db_path = rag.value(
+        "vector_db_path", "./knowledge_base/vectors.db");
+    rag_config_.chunk_size = rag.value("chunk_size", 500);
+    rag_config_.chunk_overlap = rag.value("chunk_overlap", 50);
+    rag_config_.max_history_turns = rag.value("max_history_turns", 5);
+    rag_config_.top_k = rag.value("top_k", 3);
+    rag_config_.similarity_threshold = rag.value(
+        "similarity_threshold", 0.7f);
+}
+
+// ============================================================
+// 角色配置解析（第六步新增）
+// ============================================================
+void Config::LoadRolesConfig(const nlohmann::json& json) {
+    if (!json.contains("roles")) {
+        LoadBuiltInRoles();
+        return;
+    }
+
+    const auto& roles = json["roles"];
+    default_role_ = roles.value("default", "general_assistant");
+
+    if (roles.contains("presets") && roles["presets"].is_object()) {
+        for (const auto& [key, preset_json] : roles["presets"].items()) {
+            RolePreset preset;
+            preset.name = preset_json.value("name", key);
+            preset.description = preset_json.value("description", "");
+            preset.style = preset_json.value("style", "专业");
+            preset.fallback = preset_json.value("fallback", "抱歉，无法回答。");
+            role_presets_[key] = preset;
+        }
+    }
+
+    // 设置活跃角色
+    if (active_role_.empty()) {
+        active_role_ = default_role_;
+    }
+}
+
+// ============================================================
+// 内置角色预设
+// ============================================================
+void Config::LoadBuiltInRoles() {
+    default_role_ = "interviewer";
+
+    role_presets_["interviewer"] = {
+        "专业面试官",
+        "你是一位资深技术面试官，负责评估候选人的技术能力和综合素质。"
+        "请根据参考知识库中的岗位要求和技术标准来提问和评估。",
+        "专业严谨，温和但不失锐度",
+        "抱歉，我在当前知识库中没有找到相关岗位标准，请问能否提供更多信息？"
+    };
+
+    role_presets_["general_assistant"] = {
+        "AI 面试助手",
+        "你是一位技术面试学习助手，只根据当前启用知识库中的参考资料回答问题，"
+        "帮助用户进行面试复习。不得编造知识库中不存在的内容。",
+        "专业准确，简洁清晰，保留标准技术术语",
+        "当前知识库中没有检索到与该问题相关的内容，请调整问题表述或上传相关技术资料后重试。"
+    };
+
+    active_role_ = default_role_;
+}
+
+// ============================================================
+// 角色查询接口
+// ============================================================
+const RolePreset* Config::GetRolePreset(const std::string& key) const {
+    auto it = role_presets_.find(key);
+    if (it != role_presets_.end()) {
+        return &it->second;
+    }
+    return nullptr;
+}
+
+std::vector<std::string> Config::GetRoleKeys() const {
+    std::vector<std::string> keys;
+    for (const auto& [key, _] : role_presets_) {
+        keys.push_back(key);
+    }
+    return keys;
+}
+
+void Config::SetActiveRole(const std::string& role_key) {
+    if (role_presets_.count(role_key)) {
+        active_role_ = role_key;
+    }
+}
+
+} // namespace common
 } // namespace interview

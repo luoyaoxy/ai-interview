@@ -1,11 +1,18 @@
+/**
+ * @file llm_client.cpp
+ * @brief 大语言模型 HTTP 客户端及面试智能任务实现。
+ *
+ * 主要模块：通用对话、问题生成、回答评分、面试总结和 RAG 对话。
+ */
+
 #include "services/llm_client.h"
 #include "common/config.h"
+#include "common/http_client.h"
 #include "common/logger.h"
 #include "common/utils.h"
-#include <curl/curl.h>
-#include <sstream>
-#include <stdexcept>
+
 #include <algorithm>
+#include <stdexcept>
 
 // Undefine Windows macros that conflict with our methods
 #ifdef SendMessage
@@ -21,32 +28,22 @@
 namespace interview {
 namespace services {
 
-// CURL写入回调函数
-static size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* userp) {
-    userp->append(static_cast<char*>(contents), size * nmemb);
-    return size * nmemb;
-}
-
 class LLMClient::LLMClientImpl {
 public:
-    LLMClientImpl() {
-        curl_global_init(CURL_GLOBAL_DEFAULT);
-    }
+    // 对话历史记录
+    struct ConversationTurn {
+        std::string user;
+        std::string assistant;
+    };
 
-    ~LLMClientImpl() {
-        curl_global_cleanup();
-    }
+    std::vector<ConversationTurn> history_;
+    int max_history_turns_ = 5;
 
     std::string CallAPI(const nlohmann::json& request_body) {
         auto& cfg = common::Config::Instance().llm_config;
 
         if (cfg.api_key.empty()) {
             throw std::runtime_error("LLM API key not configured");
-        }
-
-        CURL* curl = curl_easy_init();
-        if (!curl) {
-            throw std::runtime_error("Failed to initialize CURL");
         }
 
         // 将JSON转换为UTF-8字符串并保持变量存活
@@ -56,64 +53,42 @@ public:
         LOG_INFO("Model: {}", cfg.model);
         LOG_INFO("Request Body:\n{}", request_body.dump(2));
 
-        std::string response_string;
-        struct curl_slist* headers = nullptr;
+        const std::vector<std::string> headers = {
+            "Content-Type: application/json; charset=utf-8",
+            "Authorization: Bearer " + cfg.api_key
+        };
+        common::HttpRequestOptions options;
+        options.timeout_seconds = cfg.timeout_seconds;
+        options.verify_ssl = false;
 
-        try {
-            // 设置请求头，明确指定UTF-8编码
-            headers = curl_slist_append(headers, "Content-Type: application/json; charset=utf-8");
-            std::string auth_header = "Authorization: Bearer " + cfg.api_key;
-            headers = curl_slist_append(headers, auth_header.c_str());
-
-            // 设置CURL选项
-            curl_easy_setopt(curl, CURLOPT_URL, cfg.api_url.c_str());
-            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request_json.c_str());
-            curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, request_json.size());
-            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_string);
-            curl_easy_setopt(curl, CURLOPT_TIMEOUT, cfg.timeout_seconds);
-            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);  // 开发环境可以禁用SSL验证
-
-            // 执行请求
-            CURLcode res = curl_easy_perform(curl);
-
-            if (res != CURLE_OK) {
-                std::string error = "CURL request failed: " + std::string(curl_easy_strerror(res));
-                curl_easy_cleanup(curl);
-                curl_slist_free_all(headers);
-                throw std::runtime_error(error);
-            }
-
-            // 检查HTTP状态码
-            long http_code = 0;
-            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-
-            LOG_INFO("=== LLM API Response ===");
-            LOG_INFO("HTTP Status: {}", http_code);
-            LOG_INFO("Response Body:\n{}", response_string);
-
-            if (http_code != 200) {
-                LOG_ERROR("LLM API returned HTTP {}: {}", http_code, response_string);
-                curl_easy_cleanup(curl);
-                curl_slist_free_all(headers);
-                throw std::runtime_error("LLM API request failed with HTTP " + std::to_string(http_code));
-            }
-
-            curl_easy_cleanup(curl);
-            curl_slist_free_all(headers);
-
-            return response_string;
-
-        } catch (...) {
-            curl_easy_cleanup(curl);
-            if (headers) curl_slist_free_all(headers);
-            throw;
+        const common::HttpResponse response = common::HttpClient::Post(
+            cfg.api_url, request_json, headers, options);
+        if (!response.TransportSucceeded()) {
+            throw std::runtime_error(
+                "CURL request failed: " + response.error_message);
         }
+
+        LOG_INFO("=== LLM API Response ===");
+        LOG_INFO("HTTP Status: {}", response.status_code);
+        LOG_INFO("Response Body:\n{}", response.body);
+
+        if (response.status_code != 200) {
+            LOG_ERROR("LLM API returned HTTP {}: {}",
+                      response.status_code, response.body);
+            throw std::runtime_error(
+                "LLM API request failed with HTTP " +
+                std::to_string(response.status_code));
+        }
+
+        return response.body;
     }
 
-    nlohmann::json BuildRequestBody(const std::vector<Message>& messages) {
+    nlohmann::json BuildRequestBody(const std::vector<Message>& messages,
+                                    int max_tokens_override = -1) {
         auto& cfg = common::Config::Instance().llm_config;
+        const int request_max_tokens = max_tokens_override > 0
+            ? max_tokens_override
+            : cfg.max_tokens;
 
         nlohmann::json request;
 
@@ -121,13 +96,13 @@ public:
         nlohmann::json model_config;
         model_config["name"] = cfg.model;  // 模型名称放在 model_config.name
         model_config["temperature"] = cfg.temperature;
-        model_config["max_tokens"] = cfg.max_tokens;
+        model_config["max_tokens"] = request_max_tokens;
         request["model_config"] = model_config;
 
         // 同时保留顶层的model字段以兼容其他API
         request["model"] = cfg.model;
         request["temperature"] = cfg.temperature;
-        request["max_tokens"] = cfg.max_tokens;
+        request["max_tokens"] = request_max_tokens;
 
         nlohmann::json messages_array = nlohmann::json::array();
         for (const auto& msg : messages) {
@@ -158,6 +133,7 @@ public:
             throw std::runtime_error("Failed to parse LLM response: " + std::string(e.what()));
         }
     }
+
 };
 
 LLMClient::LLMClient()
@@ -166,7 +142,9 @@ LLMClient::LLMClient()
 
 LLMClient::~LLMClient() = default;
 
-std::string LLMClient::SendMessage(const std::string& message, const std::string& system_prompt) {
+std::string LLMClient::SendMessage(const std::string& message,
+                                   const std::string& system_prompt,
+                                   int max_tokens_override) {
     std::vector<Message> messages;
 
     if (!system_prompt.empty()) {
@@ -174,11 +152,13 @@ std::string LLMClient::SendMessage(const std::string& message, const std::string
     }
     messages.push_back({"user", message});
 
-    return SendConversation(messages);
+    return SendConversation(messages, max_tokens_override);
 }
 
-std::string LLMClient::SendConversation(const std::vector<Message>& messages) {
-    auto request_body = pimpl_->BuildRequestBody(messages);
+std::string LLMClient::SendConversation(const std::vector<Message>& messages,
+                                        int max_tokens_override) {
+    auto request_body = pimpl_->BuildRequestBody(
+        messages, max_tokens_override);
 
     LOG_INFO("Sending request to LLM API...");
     std::string response_str = pimpl_->CallAPI(request_body);
@@ -228,7 +208,7 @@ nlohmann::json LLMClient::GenerateQuestionsFromResume(const std::string& resume_
     LOG_INFO("Resume text length: {} characters", resume_text.length());
     LOG_INFO("Requested questions: {}", min_questions);
 
-    std::string response = SendMessage(user_prompt, system_prompt);
+    std::string response = SendMessage(user_prompt, system_prompt, 1536);
 
     try {
         // 使用utils中的JSON解析函数
@@ -252,7 +232,10 @@ nlohmann::json LLMClient::GenerateQuestionsFromResume(const std::string& resume_
     }
 }
 
-nlohmann::json LLMClient::EvaluateAnswer(const std::string& question, const std::string& answer) {
+nlohmann::json LLMClient::EvaluateAnswer(
+    const std::string& question,
+    const std::string& answer,
+    const std::string& reference_context) {
     std::string system_prompt = R"(你是一位资深的C++技术面试官，以严格、客观的标准评估候选人的回答。
 
 评分标准（0-100分）- 请严格执行：
@@ -310,14 +293,27 @@ nlohmann::json LLMClient::EvaluateAnswer(const std::string& question, const std:
   "weaknesses": ["概念混淆", "答非所问", "没有抓住问题重点"]
 })";
 
-    std::string user_prompt = "问题：" + question + "\n\n候选人回答：" + answer +
-                             "\n\n请评估这个回答，判断是否需要追问，并以JSON格式返回结果。";
+    std::string user_prompt = "问题：" + question +
+                             "\n\n候选人回答：" + answer;
+    if (!reference_context.empty()) {
+        user_prompt +=
+            "\n\n以下内容来自当前启用的知识库，请优先把其中的技术要点、"
+            "岗位要求和评分标准作为评价依据；如果材料不完整或与问题无关，"
+            "请结合专业知识客观评分，不要臆造材料中不存在的要求：\n"
+            "----- 知识库参考资料 -----\n" +
+            reference_context +
+            "\n----- 参考资料结束 -----";
+    }
+    user_prompt +=
+        "\n\n请评估这个回答，判断是否需要追问，并以JSON格式返回结果。";
 
     LOG_INFO(">>> Calling LLM: EvaluateAnswer");
     LOG_INFO("Question: {}", question);
     LOG_INFO("Answer: {}", answer);
 
-    std::string response = SendMessage(user_prompt, system_prompt);
+    // Evaluation returns a small JSON object. A bounded completion prevents
+    // long hidden reasoning from extending the pause between interview turns.
+    std::string response = SendMessage(user_prompt, system_prompt, 2048);
 
     try {
         // 使用utils中的JSON解析函数
@@ -372,7 +368,9 @@ nlohmann::json LLMClient::GenerateSummary(const nlohmann::json& interview_record
     std::string user_prompt = "面试记录：\n" + interview_records.dump(2);
 
     if (!resume_text.empty()) {
-        user_prompt += "\n\n候选人简历：\n" + resume_text;
+        user_prompt +=
+            "\n\n候选人的简历已经用于生成本次面试问题。总结应以实际问答记录为主，"
+            "无需复述简历内容。";
     }
 
     user_prompt += "\n\n请生成完整的面试总结和建议，以JSON格式返回。";
@@ -380,7 +378,7 @@ nlohmann::json LLMClient::GenerateSummary(const nlohmann::json& interview_record
     LOG_INFO(">>> Calling LLM: GenerateSummary");
     LOG_INFO("Interview records: {} questions", interview_records.size());
 
-    std::string response = SendMessage(user_prompt, system_prompt);
+    std::string response = SendMessage(user_prompt, system_prompt, 2560);
 
     try {
         // 使用utils中的JSON解析函数
@@ -394,6 +392,58 @@ nlohmann::json LLMClient::GenerateSummary(const nlohmann::json& interview_record
         LOG_ERROR("Failed to parse summary JSON: {}", e.what());
         throw std::runtime_error("Failed to generate summary: " + std::string(e.what()));
     }
+}
+
+// ============================================================
+// RAG 对话接口（第四步新增）
+// ============================================================
+
+std::string LLMClient::ChatWithRAG(const std::string& system_prompt,
+                                    const std::string& user_prompt) {
+    std::vector<Message> messages;
+
+    // 1. System Prompt（含 RAG 知识库上下文）
+    messages.push_back({"system", system_prompt});
+
+    // 2. 对话历史（最近 N 轮）
+    int start_idx = 0;
+    int history_size = static_cast<int>(pimpl_->history_.size());
+    if (history_size > pimpl_->max_history_turns_) {
+        start_idx = history_size - pimpl_->max_history_turns_;
+    }
+    for (int i = start_idx; i < history_size; i++) {
+        messages.push_back({"user", pimpl_->history_[i].user});
+        messages.push_back({"assistant", pimpl_->history_[i].assistant});
+    }
+
+    // 3. 当前用户问题
+    messages.push_back({"user", user_prompt});
+
+    LOG_INFO(">>> RAG Chat: history_turns={}, total_messages={}",
+             history_size, messages.size());
+
+    // 4. 调用 LLM
+    std::string response = SendConversation(messages);
+
+    // 5. 保存本轮对话到历史
+    pimpl_->history_.push_back({user_prompt, response});
+
+    // 6. 裁剪历史（保留最近 max_history_turns 轮）
+    while (static_cast<int>(pimpl_->history_.size()) > pimpl_->max_history_turns_) {
+        pimpl_->history_.erase(pimpl_->history_.begin());
+    }
+
+    return response;
+}
+
+void LLMClient::ClearConversationHistory() {
+    pimpl_->history_.clear();
+    LOG_INFO("Conversation history cleared");
+}
+
+void LLMClient::SetMaxHistoryTurns(int max_turns) {
+    pimpl_->max_history_turns_ = max_turns > 0 ? max_turns : 5;
+    LOG_INFO("Max history turns set to {}", pimpl_->max_history_turns_);
 }
 
 } // namespace services
