@@ -41,7 +41,7 @@ class FakeLlmProvider:
 
     async def generate(self, messages: list[ChatMessage]) -> str:
         self.requests.append(messages)
-        return "根据知识库，虚函数通过动态绑定实现运行时多态。"
+        return "根据知识库，虚函数通过动态绑定实现运行时多态。[1]"
 
 
 @pytest.fixture

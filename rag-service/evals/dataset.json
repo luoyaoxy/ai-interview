@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "documents": [
+    {"name": "smart-pointers.md", "content": "# 智能指针\nunique_ptr 独占对象所有权，不能复制，但可以通过 std::move 转移所有权。\nshared_ptr 使用引用计数管理共享所有权；最后一个 shared_ptr 销毁时对象才会释放。\nweak_ptr 不增加引用计数，可用于打破两个 shared_ptr 相互持有造成的循环引用。\nshared_ptr 的控制块引用计数操作是线程安全的，但多个线程同时修改同一个被管理对象仍需自行同步。"},
+    {"name": "containers.md", "content": "# 容器与迭代器\nvector 扩容时会重新分配存储空间，原有迭代器、指针和引用都会失效。\n向 vector 尾部插入元素且没有触发扩容时，end 迭代器失效，已有元素的迭代器保持有效。\nstd::map 通常由平衡树实现，插入元素不会使已有迭代器失效。"},
+    {"name": "concurrency.md", "content": "# 并发\nstd::lock_guard 在构造时获取互斥锁，在析构时释放互斥锁，适合在作用域内管理锁。\nstd::unique_lock 可以延迟加锁，也支持主动解锁和重新加锁。\n调用 std::condition_variable::wait 时，等待线程会临时释放关联的互斥锁，被唤醒后重新获取锁。"}
+  ],
+  "questions": [
+    {"id": "q01", "question": "unique_ptr 能复制吗？如何转移所有权？", "answerable": true, "reference_answer": "不能复制，可通过 std::move 转移所有权。", "evidence": [{"document": "smart-pointers.md", "quote": "unique_ptr 独占对象所有权，不能复制，但可以通过 std::move 转移所有权。"}]},
+    {"id": "q02", "question": "shared_ptr 什么时候释放被管理对象？", "answerable": true, "reference_answer": "最后一个 shared_ptr 销毁时释放对象。", "evidence": [{"document": "smart-pointers.md", "quote": "最后一个 shared_ptr 销毁时对象才会释放。"}]},
+    {"id": "q03", "question": "两个智能指针互相持有导致循环引用，该用什么打破？", "answerable": true, "reference_answer": "使用 weak_ptr。", "evidence": [{"document": "smart-pointers.md", "quote": "weak_ptr 不增加引用计数，可用于打破两个 shared_ptr 相互持有造成的循环引用。"}]},
+    {"id": "q04", "question": "shared_ptr 的引用计数安全，是否意味着对象可以并发修改？", "answerable": true, "reference_answer": "不意味着；被管理对象的并发修改仍需同步。", "evidence": [{"document": "smart-pointers.md", "quote": "shared_ptr 的控制块引用计数操作是线程安全的，但多个线程同时修改同一个被管理对象仍需自行同步。"}]},
+    {"id": "q05", "question": "vector 扩容对原有迭代器有什么影响？", "answerable": true, "reference_answer": "原有迭代器、指针和引用都会失效。", "evidence": [{"document": "containers.md", "quote": "vector 扩容时会重新分配存储空间，原有迭代器、指针和引用都会失效。"}]},
+    {"id": "q06", "question": "vector 尾插没有扩容时，哪些迭代器失效？", "answerable": true, "reference_answer": "end 失效，已有元素的迭代器保持有效。", "evidence": [{"document": "containers.md", "quote": "向 vector 尾部插入元素且没有触发扩容时，end 迭代器失效，已有元素的迭代器保持有效。"}]},
+    {"id": "q07", "question": "map 插入元素会使已有迭代器失效吗？", "answerable": true, "reference_answer": "不会。", "evidence": [{"document": "containers.md", "quote": "std::map 通常由平衡树实现，插入元素不会使已有迭代器失效。"}]},
+    {"id": "q08", "question": "lock_guard 和 unique_lock 在加锁灵活性上有什么区别？", "answerable": true, "reference_answer": "lock_guard 按作用域获取和释放锁；unique_lock 可延迟加锁、主动解锁和重新加锁。", "evidence": [{"document": "concurrency.md", "quote": "std::lock_guard 在构造时获取互斥锁，在析构时释放互斥锁，适合在作用域内管理锁。"}, {"document": "concurrency.md", "quote": "std::unique_lock 可以延迟加锁，也支持主动解锁和重新加锁。"}]},
+    {"id": "q09", "question": "condition_variable::wait 等待时会怎样处理互斥锁？", "answerable": true, "reference_answer": "等待时临时释放，唤醒后重新获取。", "evidence": [{"document": "concurrency.md", "quote": "调用 std::condition_variable::wait 时，等待线程会临时释放关联的互斥锁，被唤醒后重新获取锁。"}]},
+    {"id": "q10", "question": "资料中推荐使用哪种 C++ 编译器版本？", "answerable": false, "reference_answer": null, "evidence": []},
+    {"id": "q11", "question": "Python 的 GIL 如何影响多线程 CPU 计算？", "answerable": false, "reference_answer": null, "evidence": []},
+    {"id": "q12", "question": "这些资料是否给出了 std::map 查找的实测耗时？", "answerable": false, "reference_answer": null, "evidence": []}
+  ]
+}

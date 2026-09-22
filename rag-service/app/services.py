@@ -41,7 +41,13 @@ class ServiceContainer:
             embedding=self.embedding,
             batch_size=settings.embedding_batch_size,
         )
-        self.retriever = SemanticRetriever(self.embedding, self.store)
+        self.retriever = SemanticRetriever(
+            self.embedding,
+            self.store,
+            mode=settings.retrieval_mode,
+            candidate_k=settings.retrieval_candidate_k,
+            lexical_threshold=settings.lexical_threshold,
+        )
         self.llm = HttpLlmProvider(
             api_url=settings.llm_api_url,
             api_key=settings.llm_api_key,

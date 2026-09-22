@@ -89,6 +89,10 @@ OpenAI 兼容服务，请同时设置 `RAG_EMBEDDING_API_URL`、
 
 ## 测试
 
+RAG 检索与答案质量评测见 [`evals/README.md`](evals/README.md)。其中提供带原文证据
+标注的问题集、Hit@K / Recall@K / MRR 统计，以及逐题答案和引用复核记录。评测集
+是初始样例，正式比较前应补充真实面试资料与独立留出的测试题。
+
 ```powershell
 python -m pytest
 ruff check app tests

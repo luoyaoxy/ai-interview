@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = Field(default=60.0, gt=0)
     top_k: int = Field(default=3, ge=1, le=20)
     similarity_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    retrieval_mode: str = Field(default="hybrid", pattern="^(semantic|hybrid)$")
+    retrieval_candidate_k: int = Field(default=20, ge=1, le=200)
+    lexical_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
     max_history_turns: int = Field(default=5, ge=0, le=100)
     verify_ssl: bool = True
 

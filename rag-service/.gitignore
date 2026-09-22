@@ -10,3 +10,5 @@ dist/
 build/
 *.egg-info/
 data/
+evals/reports/
+.test-temp-codex/

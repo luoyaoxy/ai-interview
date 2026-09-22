@@ -1,6 +1,7 @@
 """Complete RAG query pipeline."""
 
 import asyncio
+import re
 from dataclasses import dataclass
 from uuid import uuid4
 
@@ -77,6 +78,18 @@ class RagService:
                 ChatMessage(role="user", content=question),
             ]
             answer = await self._llm.generate(messages)
+            citations = [int(value) for value in re.findall(r"\[(\d+)\]", answer)]
+            if (
+                "INSUFFICIENT_EVIDENCE" in answer
+                or not citations
+                or any(index < 1 or index > len(sources) for index in citations)
+            ):
+                return RagAnswer(
+                    conversation_id=selected_conversation,
+                    knowledge_found=False,
+                    answer=self._prompt_builder.get_role(selected_role).fallback,
+                    sources=[],
+                )
             self._conversations.append(selected_conversation, question, answer)
             return RagAnswer(
                 conversation_id=selected_conversation,

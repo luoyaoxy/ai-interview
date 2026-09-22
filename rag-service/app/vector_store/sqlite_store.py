@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from app.core.errors import ServiceError
+from app.retrieval.lexical import lexical_score
 from app.vector_store.ports import (
     DocumentRecord,
     KnowledgeBaseRecord,
@@ -458,6 +459,41 @@ class SqliteVectorStore:
                 )
             )
         matches.sort(key=lambda match: match.score, reverse=True)
+        return matches[:top_k]
+
+    def search_keywords(
+        self, knowledge_base_id: str, question: str, *, top_k: int
+    ) -> list[SearchMatch]:
+        """Find lexical candidates within one knowledge base, including Chinese bigrams."""
+        self.get_knowledge_base(knowledge_base_id)
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM document_chunks WHERE knowledge_base_id = ?",
+                (knowledge_base_id,),
+            ).fetchall()
+        matches: list[SearchMatch] = []
+        for row in rows:
+            score = lexical_score(question, str(row["content"]))
+            if score <= 0.0:
+                continue
+            metadata = json.loads(row["metadata_json"])
+            if row["page"] is not None:
+                metadata["page"] = int(row["page"])
+            matches.append(
+                SearchMatch(
+                    chunk=StoredChunk(
+                        id=str(row["id"]),
+                        knowledge_base_id=str(row["knowledge_base_id"]),
+                        document_id=str(row["document_id"]),
+                        document_name=str(row["document_name"]),
+                        content=str(row["content"]),
+                        vector=[],
+                        metadata=metadata,
+                    ),
+                    score=score,
+                )
+            )
+        matches.sort(key=lambda match: (-match.score, match.chunk.id))
         return matches[:top_k]
 
     @staticmethod

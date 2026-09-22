@@ -1,6 +1,6 @@
-# AI 实时语音面试系统
+# AI 语音面试与 RAG 知识问答系统
 
-基于 C++17 和 Qt6 开发的桌面 AI 模拟面试系统。项目集成实时语音识别、语音合成、DeepSeek 大语言模型和本地 RAG 知识库，支持语音面试、动态追问、回答评分、面试总结，以及基于技术资料的连续文字问答。
+基于 C++17 和 Qt6 开发的桌面 AI 模拟面试系统。项目集成实时语音识别、语音合成和 DeepSeek 大语言模型，并通过 HTTP 接入独立的 Python RAG 服务，支持语音面试、动态追问、回答评分、面试总结，以及基于技术资料的连续文字问答。旧的 C++ 本地 RAG 链路仍保留用于回退和对比验证，但默认使用独立服务。
 
 ## 当前功能
 
@@ -9,9 +9,9 @@
 - 创建候选人面试会话并设置题目数量。
 - 解析文本型 PDF 简历，生成个性化技术问题。
 - 未提供简历时生成通用 C++ 面试题。
-- 使用麦克风采集候选人回答，并通过云端 ASR 转写。
+- 使用麦克风采集候选人回答，并通过云端 ASR 转写。（ASR automatic speech recognition 自动语音识别技术）
 - 使用 DeepSeek 评估回答、决定是否追问并生成整体总结。
-- 使用云端 TTS 播放开场白、问题、追问和总结。
+- 使用云端 TTS 播放开场白、问题、追问和总结。(TTS text to speech 文本转语音)
 - 修复追问状态错乱、重复 ASR、总结尾音截断和音频卡顿问题。
 - 面试结束后生成 JSON 报告。
 
@@ -20,21 +20,20 @@
 - 创建、删除和启用多个知识库。
 - 上传单个或多个 PDF、TXT、Markdown、JSON 文档。
 - 上传包含支持格式文档的文件夹。
-- 按 Markdown 标题边界切分文档，避免相邻问答串块。
-- 使用本地 Ollama `qwen3-embedding:0.6b` 生成 1024 维向量。
-- 使用 SQLite 持久化知识库、文档块和向量。
-- 对当前启用知识库执行 Top-K 相似度检索。
+- 默认由独立 RAG 服务完成文档解析、按标题和长度切分、向量化与持久化。
+- RAG 服务默认调用 Ollama `qwen3-embedding:0.6b` 生成 1024 维向量。
+- RAG 服务使用 SQLite 持久化知识库、文档块和向量；默认结合向量与关键词检索，对候选片段融合、重排后返回 Top-K。可切换到纯向量模式作对比。
 - 专业面试官可以使用知识库内容辅助回答评估。
 
 ### AI 面试助手
 
 - 独立的连续文字问答页面。
-- 严格根据当前启用知识库回答技术问题。
-- 使用 DeepSeek 生成答案，使用 Ollama 完成知识检索向量化。
-- 支持最近多轮对话上下文和指代型追问。
-- 显示参考文件、相似度和相关文档片段。
+- 要求根据当前启用知识库回答技术问题，并在事实性结论后标注资料编号。
+- RAG 服务调用已配置的生成模型（如 DeepSeek）生成答案，默认调用 Ollama 完成知识检索向量化。
+- RAG 服务通过会话 ID 管理最近多轮对话上下文和指代型追问。
+- 显示参考文件、检索排序分数和相关文档片段；混合模式的分数不是余弦相似度。
 - 支持 Markdown 标题、列表、加粗、行内代码和代码块渲染。
-- 没有检索到相关资料时不调用 DeepSeek，避免脱离知识库编造答案。
+- 没有检索到资料时不调用生成模型；模型表示证据不足、未提供引用或引用编号无效时，返回拒答提示。
 - 切换知识库时自动清空上一知识库的对话历史。
 
 ## 客户端页面
@@ -52,7 +51,7 @@
 ├─ 知识库列表
 ├─ 创建、删除和启用
 ├─ 文档与文件夹上传
-└─ 向量检索测试
+└─ 知识库检索测试
 
 AI 面试助手
 ├─ 当前知识库状态
@@ -69,31 +68,29 @@ AI 面试助手
 ## 系统架构
 
 ```text
-Qt6 MainWindow
-├─ 面试页面
-│  └─ DialogSession
-│     ├─ InterviewSession
-│     │  ├─ PDFParser
-│     │  └─ LLMClient（DeepSeek）
-│     ├─ RealtimeClient（WebSocket）
-│     │  ├─ ASR
-│     │  ├─ VAD
-│     │  └─ TTS
-│     └─ AudioDeviceManager（PortAudio）
+Qt6 桌面客户端（C++）
+├─ 面试页面 / DialogSession
+│  ├─ PDFParser：解析候选人简历
+│  ├─ LLMClient（DeepSeek）：出题、评估、追问和总结
+│  ├─ RealtimeClient（WebSocket）：ASR、VAD 和 TTS
+│  └─ AudioDeviceManager（PortAudio）：录音与播放
 │
-├─ KnowledgeBaseWidget
-│  ├─ DocumentLoader
-│  ├─ EmbeddingClient（Ollama）
-│  └─ VectorStore（SQLite）
-│
-└─ KnowledgeChatWidget
-   ├─ RAGPromptBuilder
-   ├─ EmbeddingClient（Ollama）
-   ├─ VectorStore（SQLite）
-   └─ 独立 LLMClient（DeepSeek）
+├─ KnowledgeBaseWidget：知识库与文档管理界面
+├─ KnowledgeChatWidget：知识问答与来源展示界面
+└─ RagBackend
+   ├─ RagClient（默认）：通过 HTTP 调用独立 RAG 服务
+   └─ LocalRagBackend（可选）：旧本地链路，用于回退和对比
+
+独立 RAG 服务（Python / FastAPI，由 RagClient 调用）
+├─ 知识库与文档管理
+├─ 文档解析与切分
+├─ Embedding（默认 Ollama）
+├─ SQLite 向量存储、关键词与向量混合检索、候选重排
+├─ RAG Prompt、引用编号校验与多轮会话管理
+└─ LLM（需配置，如 DeepSeek）：生成带资料编号的答案
 ```
 
-面试与 AI 面试助手使用独立的 RAG 角色实例和 LLM 对话历史，避免知识问答影响面试评分流程。
+普通面试仍由 Qt 客户端负责，不经过 RAG 服务；知识库管理和知识问答默认由 RAG 服务负责。两条链路的 LLM 对话状态相互隔离，避免知识问答影响面试评分流程。更详细的服务边界和数据归属见 [`docs/architecture/rag_service_boundary.md`](docs/architecture/rag_service_boundary.md)。
 
 ## RAG 工作流程
 
@@ -101,24 +98,24 @@ Qt6 MainWindow
 
 ```text
 PDF/TXT/Markdown/JSON
-    → 解析文本
-    → 按标题和长度分块
-    → Ollama 生成向量
-    → 写入 SQLite 知识库
+    → Qt 客户端通过 HTTP 上传文件
+    → RAG 服务解析文本并按标题和长度分块
+    → RAG 服务调用 Ollama 生成向量
+    → RAG 服务写入自己的 SQLite 数据库
 ```
 
 ### AI 面试助手问答
 
 ```text
 用户问题
-    → Ollama 生成查询向量
-    → 检索当前启用知识库
-    → RAGPromptBuilder 组织参考资料
-    → DeepSeek 生成回答
-    → 显示 Markdown 回答与来源
+    → Qt 客户端提交问题、知识库 ID 和会话 ID
+    → RAG 服务调用 Ollama 生成查询向量
+    → RAG 服务结合向量与关键词检索，融合并重排资料
+    → RAG 服务调用已配置的生成模型，检查引用编号或拒答
+    → Qt 客户端显示 Markdown 回答与来源
 ```
 
-Ollama 只负责 Embedding，不负责生成最终答案。DeepSeek 负责面试出题、评估、总结和 AI 面试助手回答。
+Ollama 只负责 Embedding，不负责生成最终答案。Qt 客户端中的 DeepSeek 负责面试出题、评估和总结；独立 RAG 服务需要另行配置生成模型的地址、密钥和模型名。引用编号校验只能确认回答引用了当前检索结果，是否真正受到原文支持仍需评测和人工复核。
 
 ## 技术栈
 
@@ -134,6 +131,8 @@ Ollama 只负责 Embedding，不负责生成最终答案。DeepSeek 负责面试
 - SQLite
 - nlohmann/json
 - spdlog
+- Python 3.11～3.14（独立 RAG 服务）
+- FastAPI / Uvicorn
 - Ollama `qwen3-embedding:0.6b`
 - DeepSeek Chat Completions API
 
@@ -143,6 +142,10 @@ Ollama 只负责 Embedding，不负责生成最终答案。DeepSeek 负责面试
 ai-interview/
 ├─ config/
 │  └─ default_config.json
+├─ docs/
+│  ├─ architecture/
+│  ├─ api/
+│  └─ deployment/
 ├─ include/
 │  ├─ common/
 │  ├─ interview/
@@ -154,6 +157,12 @@ ai-interview/
 │  ├─ services/
 │  ├─ ui/
 │  └─ main_qt.cpp
+├─ rag-service/
+│  ├─ app/
+│  ├─ evals/             # 带证据标注的评测集与评测脚本
+│  ├─ tests/
+│  ├─ Dockerfile
+│  └─ pyproject.toml
 ├─ tests/
 ├─ knowledge_base/
 │  └─ vectors.db
@@ -171,6 +180,7 @@ ai-interview/
 - vcpkg
 - Qt6 与 `vcpkg.json` 中声明的依赖
 - PowerShell 7
+- Python 3.11～3.14（使用独立 RAG 服务时）
 - Ollama
 - 可用的麦克风和扬声器
 - 可访问 DeepSeek 和实时语音服务的网络
@@ -258,22 +268,26 @@ Qt 翻译目录、ICU 模块探测和 `VCINSTALLDIR` 相关的 `windeployqt` 警
 
 ## 运行项目
 
-请从项目根目录启动：
+默认配置 `use_remote_rag=true`。需要先按照 [`rag-service/README.md`](rag-service/README.md) 启动独立 RAG 服务，并确保客户端的 `service_url` 和 `api_key` 与服务端配置一致；如果只使用语音面试而不使用知识库功能，可以仅启动客户端。
+
+然后从项目根目录启动 Qt 客户端：
 
 ```powershell
 cd D:\Projects\ai-interview
 .\build\Release\CppInterviewSystem.exe
 ```
 
-不要直接在其他工作目录双击或启动 EXE。当前配置中的数据库路径是：
+远程模式下，知识库数据由 RAG 服务拥有，Qt 客户端不会直接读写 `knowledge_base/vectors.db`。服务端数据库位置和上传目录由 `rag-service/.env` 配置；客户端不应依赖服务端的本地文件路径。
+
+只有显式设置 `use_remote_rag=false` 启用旧本地回退链路时，下面的客户端数据库路径才生效：
 
 ```text
 ./knowledge_base/vectors.db
 ```
 
-它是相对于程序启动时的工作目录解析的。如果从其他目录启动，程序可能打开另一份 `knowledge_base/vectors.db`，界面上会表现为原有知识库或文档块“消失”。数据通常没有被删除，只是程序打开了不同路径下的数据库。
+该路径相对于程序启动时的工作目录解析，因此使用本地回退模式时应从项目根目录启动。
 
-当前项目根目录中的知识库数据库应位于：
+本地回退数据库应位于：
 
 ```text
 D:\Projects\ai-interview\knowledge_base\vectors.db
@@ -312,6 +326,25 @@ D:\Projects\ai-interview\knowledge_base\vectors.db
 5. 可以继续使用“它”“这个机制”等方式追问。
 6. 切换知识库或点击“清空对话”后，将开始新的对话上下文。
 
+## RAG 效果评测
+
+独立 RAG 服务提供 [带原文证据标注的评测集与运行说明](rag-service/evals/README.md)。当前样例包含 9 道可回答题和 3 道应拒答题，可计算 Hit@K、Recall@K、MRR，并记录逐题检索结果与耗时。样例规模较小，正式判断优化效果前应补充真实资料和独立留出的测试题。
+
+先将服务端 `RAG_RETRIEVAL_MODE` 设为 `semantic` 并重启服务。在 `rag-service` 目录中执行基线评测：
+
+```powershell
+$env:RAG_API_KEY = "与服务端一致的密钥"
+python -m evals.run --api-key $env:RAG_API_KEY --label semantic --report evals/reports/semantic.json
+```
+
+记录命令输出的知识库 ID，再将服务端模式改为 `hybrid` 并重启，使用同一批已入库文档比较：
+
+```powershell
+python -m evals.run --api-key $env:RAG_API_KEY --knowledge-base-id "上一步输出的知识库ID" --label hybrid --report evals/reports/hybrid.json
+```
+
+增加 `--answers` 可调用已配置的生成模型，检查拒答和引用编号，并生成待人工复核的答案报告。自动检查不能证明每个结论都受到原文支持；需按评测说明复核答案、引用与证据。评测报告存放在 `rag-service/evals/reports/`，不会提交到 Git。
+
 ## 自动化测试
 
 编译后执行：
@@ -321,6 +354,14 @@ ctest --test-dir build -C Release --output-on-failure
 ```
 
 当前包含 Markdown 标题边界分块测试，用于防止相邻技术问题和答案被错误拼接到同一文档块。
+
+独立 RAG 服务测试：
+
+```powershell
+cd rag-service
+python -m pytest
+ruff check app tests evals
+```
 
 ## 输出文件
 
@@ -343,9 +384,11 @@ interview_report_YYYYMMDD_HHMMSS.json
 - PDF 解析主要面向文本型 PDF，暂不提供扫描图片 OCR。
 - 知识库不会自动监控本地源文件变化。
 - AI 面试助手是文字问答，不进入语音面试状态机。
-- RAG 依赖本机 Ollama 服务和已下载的向量模型。
+- 默认 RAG 服务依赖可访问的 Ollama 服务和已下载的向量模型。
 - DeepSeek 与实时语音能力依赖外部服务和有效鉴权信息。
-- 当前知识库数据库使用相对路径，启动程序时应保持项目根目录为工作目录。
+- RAG 服务当前使用进程内后台任务和进程内对话历史；生产多实例部署前应改用持久化任务队列和共享会话存储。
+- 当前关键词检索会遍历知识库文档块，较大知识库需要进一步优化索引和延迟。
+- 旧本地 RAG 回退模式的数据库使用相对路径，启用该模式时应保持项目根目录为工作目录。
 
 ## 安全注意事项
 
