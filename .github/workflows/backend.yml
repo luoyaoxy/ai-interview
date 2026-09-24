@@ -2,6 +2,8 @@ name: Backend
 
 on:
   push:
+    branches:
+      - main
     paths:
       - "rag-service/**"
       - ".github/workflows/backend.yml"

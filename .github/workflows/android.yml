@@ -2,6 +2,8 @@ name: Android
 
 on:
   push:
+    branches:
+      - main
     paths:
       - "android/**"
       - ".github/workflows/android.yml"
@@ -23,15 +25,10 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      - uses: android-actions/setup-android@v4
       - uses: gradle/actions/setup-gradle@v4
       - name: Install Android SDK 37
-        run: |
-          if command -v android >/dev/null 2>&1; then
-            android sdk install platforms/android-37.0
-            android sdk install build-tools/36.0.0
-          else
-            sdkmanager "platforms;android-37.0" "build-tools;36.0.0"
-          fi
+        run: sdkmanager "platforms;android-37" "build-tools;36.0.0"
       - name: Test and build debug APK
         run: |
           chmod +x gradlew

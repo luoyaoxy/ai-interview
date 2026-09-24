@@ -1,5 +1,7 @@
 """Interview orchestration, LLM prompts, and durable JSON session storage."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import re
