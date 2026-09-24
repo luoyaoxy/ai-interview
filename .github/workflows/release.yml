@@ -36,7 +36,7 @@ jobs:
       - uses: android-actions/setup-android@v4
       - uses: gradle/actions/setup-gradle@v4
       - name: Install Android SDK 37
-        run: sdkmanager "platforms;android-37" "build-tools;36.0.0"
+        run: android sdk install platforms/android-37.0 build-tools/36.0.0
       - name: Validate release inputs
         run: |
           test -n "$AI_INTERVIEW_API_BASE_URL"
