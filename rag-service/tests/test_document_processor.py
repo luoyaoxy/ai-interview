@@ -1,7 +1,27 @@
 import asyncio
 import json
+from zipfile import ZipFile
 
 from app.document.processor import LocalDocumentProcessor
+
+
+def test_docx_extracts_paragraphs(tmp_path) -> None:
+    document = tmp_path / "resume.docx"
+    document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>C++ engineer</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Built a low-latency service.</w:t></w:r></w:p>
+  </w:body>
+</w:document>"""
+    with ZipFile(document, "w") as archive:
+        archive.writestr("word/document.xml", document_xml)
+    processor = LocalDocumentProcessor(chunk_size=100, chunk_overlap=10)
+
+    parsed = asyncio.run(processor.process(document))
+
+    assert parsed.chunks[0].content == "C++ engineer\nBuilt a low-latency service."
+    assert parsed.chunks[0].metadata["format"] == "docx"
 
 
 def test_text_chunking_preserves_overlap_and_sentence_boundaries(tmp_path) -> None:

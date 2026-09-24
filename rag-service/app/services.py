@@ -6,11 +6,13 @@ from app.core.config import get_settings
 from app.document.ingestion import DocumentIngestionService
 from app.document.processor import LocalDocumentProcessor
 from app.embedding.http_provider import HttpEmbeddingProvider
+from app.interview.service import InterviewService
 from app.llm.http_provider import HttpLlmProvider
 from app.rag.conversations import ConversationStore
 from app.rag.prompt_builder import RagPromptBuilder
 from app.rag.service import RagService
 from app.retrieval.service import SemanticRetriever
+from app.speech.doubao import DoubaoSpeechTranscriber
 from app.vector_store.sqlite_store import SqliteVectorStore
 
 
@@ -57,6 +59,19 @@ class ServiceContainer:
             max_tokens=settings.llm_max_tokens,
             timeout_seconds=settings.llm_timeout_seconds,
             verify_ssl=settings.verify_ssl,
+        )
+        self.interviews = InterviewService(
+            llm=self.llm,
+            document_processor=self.document_processor,
+            store_path=settings.interview_store_path,
+        )
+        self.speech = DoubaoSpeechTranscriber(
+            ws_url=settings.speech_ws_url,
+            app_id=settings.speech_app_id,
+            access_key=settings.speech_access_key,
+            app_key=settings.speech_app_key,
+            resource_id=settings.speech_resource_id,
+            timeout_seconds=settings.speech_timeout_seconds,
         )
         self.conversations = ConversationStore(settings.max_history_turns)
         self.prompt_builder = RagPromptBuilder()

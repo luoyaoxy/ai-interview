@@ -21,3 +21,17 @@ knowledge_base/
 .venv-*/
 __pycache__/
 *.py[cod]
+
+# Android / Gradle
+.gradle/
+**/build/
+local.properties
+*.iml
+.idea/
+captures/
+.cxx/
+.android-sdk/
+.gradle-local/
+*.jks
+*.keystore
+keystore.properties

@@ -1,9 +1,11 @@
-"""PDF, Markdown, text, and JSON parsing with overlapping chunks."""
+"""PDF, DOCX, Markdown, text, and JSON parsing with overlapping chunks."""
 
 import asyncio
 import json
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
+from zipfile import BadZipFile, ZipFile
 
 from pypdf import PdfReader
 
@@ -30,6 +32,8 @@ class LocalDocumentProcessor:
         extension = file_path.suffix.lower()
         if extension == ".pdf":
             chunks = self._parse_pdf(file_path)
+        elif extension == ".docx":
+            chunks = self._parse_docx(file_path)
         elif extension == ".md":
             chunks = self._parse_markdown(self._read_text(file_path), file_path.name)
         elif extension == ".txt":
@@ -86,6 +90,32 @@ class LocalDocumentProcessor:
                 status_code=400,
                 code="PDF_PARSE_FAILED",
                 message=f"Failed to parse PDF document: {exc}",
+            ) from exc
+
+    def _parse_docx(self, file_path: Path) -> list[DocumentChunk]:
+        try:
+            with ZipFile(file_path) as archive:
+                document_xml = archive.read("word/document.xml")
+            root = ET.fromstring(document_xml)
+            namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+            paragraphs = []
+            for paragraph in root.findall(".//w:p", namespace):
+                text = "".join(
+                    node.text or ""
+                    for node in paragraph.findall(".//w:t", namespace)
+                ).strip()
+                if text:
+                    paragraphs.append(text)
+            return self._chunk_text(
+                "\n".join(paragraphs),
+                file_path.name,
+                extra_metadata={"format": "docx"},
+            )
+        except (BadZipFile, KeyError, ET.ParseError) as exc:
+            raise ServiceError(
+                status_code=400,
+                code="DOCX_PARSE_FAILED",
+                message=f"Failed to parse DOCX document: {exc}",
             ) from exc
 
     def _parse_markdown(self, text: str, source_name: str) -> list[DocumentChunk]:
