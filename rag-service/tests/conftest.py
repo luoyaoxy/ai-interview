@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.api.dependencies import get_settings
 from app.document.ingestion import DocumentIngestionService
+from app.interview.service import InterviewService
 from app.llm.ports import ChatMessage
 from app.main import app
 from app.rag.conversations import ConversationStore
@@ -38,10 +39,39 @@ class FakeEmbeddingProvider:
 class FakeLlmProvider:
     def __init__(self) -> None:
         self.requests: list[list[ChatMessage]] = []
+        self.follow_up_once = False
 
     async def generate(self, messages: list[ChatMessage]) -> str:
         self.requests.append(messages)
+        system = messages[0].content
+        if '"questions"' in system:
+            return '{"questions":["Question one?","Question two?"]}'
+        if '"score"' in system:
+            if self.follow_up_once:
+                self.follow_up_once = False
+                return (
+                    '{"score":55,"feedback":"Please add a concrete example.",'
+                    '"follow_up_needed":true,'
+                    '"follow_up_question":"Can you give a concrete example?"}'
+                )
+            return (
+                '{"score":82,"feedback":"Good foundation; add exception handling details.",'
+                '"follow_up_needed":false,"follow_up_question":null}'
+            )
+        if '"overall_score"' in system:
+            return (
+                '{"overall_score":82,"summary":"Solid fundamentals and clear communication.",'
+                '"strengths":["Kotlin fundamentals"],'
+                '"improvements":["Add engineering examples"],'
+                '"recommendation":"Continue practicing system design"}'
+            )
         return "根据知识库，虚函数通过动态绑定实现运行时多态。[1]"
+
+
+class FakeSpeechTranscriber:
+    async def transcribe(self, pcm: bytes) -> str:
+        assert pcm
+        return "这是手机录音的测试转写"
 
 
 @pytest.fixture
@@ -50,6 +80,7 @@ def services(tmp_path, monkeypatch) -> Iterator[ServiceContainer]:
     monkeypatch.setenv("RAG_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("RAG_VECTOR_DB_PATH", str(tmp_path / "rag.db"))
     monkeypatch.setenv("RAG_UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setenv("RAG_INTERVIEW_STORE_PATH", str(tmp_path / "interviews.json"))
     monkeypatch.setenv("RAG_LLM_API_URL", "https://llm.test/v1/chat/completions")
     monkeypatch.setenv("RAG_LLM_API_KEY", "test-llm-key")
     monkeypatch.setenv("RAG_LLM_MODEL", "test-model")
@@ -66,6 +97,12 @@ def services(tmp_path, monkeypatch) -> Iterator[ServiceContainer]:
     )
     container.retriever = SemanticRetriever(container.embedding, container.store)
     container.llm = FakeLlmProvider()
+    container.speech = FakeSpeechTranscriber()
+    container.interviews = InterviewService(
+        llm=container.llm,
+        document_processor=container.document_processor,
+        store_path=container.settings.interview_store_path,
+    )
     container.conversations = ConversationStore(container.settings.max_history_turns)
     container.prompt_builder = RagPromptBuilder()
     container.rag = RagService(

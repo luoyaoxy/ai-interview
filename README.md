@@ -2,6 +2,9 @@
 
 基于 C++17 和 Qt6 开发的桌面 AI 模拟面试系统。项目集成实时语音识别、语音合成和 DeepSeek 大语言模型，并通过 HTTP 接入独立的 Python RAG 服务，支持语音面试、动态追问、回答评分、面试总结，以及基于技术资料的连续文字问答。旧的 C++ 本地 RAG 链路仍保留用于回退和对比验证，但默认使用独立服务。
 
+Android Kotlin 客户端位于 [`android/`](android/README.md)，已支持简历上传、语音或文字面试、动态追问、报告和历史恢复。模拟器、局域网真机及 HTTPS 服务的连接方法见 [`docs/deployment/android-device.md`](docs/deployment/android-device.md)。
+正式 APK/AAB 的签名、版本和发布流程见 [`docs/deployment/android-release.md`](docs/deployment/android-release.md)。
+
 ## 当前功能
 
 ### 语音模拟面试

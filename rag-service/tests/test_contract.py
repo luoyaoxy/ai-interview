@@ -16,6 +16,15 @@ EXPECTED_OPERATIONS = {
     "searchKnowledgeBase",
     "queryRag",
     "clearRagConversation",
+    "createInterview",
+    "listInterviews",
+    "uploadInterviewResume",
+    "startInterview",
+    "submitInterviewAnswer",
+    "getInterview",
+    "finishInterview",
+    "getInterviewReport",
+    "transcribeSpeech",
 }
 
 

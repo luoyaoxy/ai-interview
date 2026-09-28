@@ -161,3 +161,77 @@ class RagQueryResponse(BaseModel):
     knowledge_found: bool
     answer: str
     sources: list[Source]
+
+
+class CreateInterviewRequest(StrictModel):
+    candidate_name: str = Field(min_length=1, max_length=128)
+    position: str = Field(min_length=1, max_length=128)
+    question_count: int = Field(default=5, ge=1, le=20)
+
+
+class SubmitInterviewAnswerRequest(StrictModel):
+    answer: str = Field(min_length=1, max_length=16000)
+
+
+class InterviewEvaluation(BaseModel):
+    score: float = Field(ge=0, le=100)
+    feedback: str
+    follow_up_needed: bool
+    follow_up_question: str | None = None
+
+
+class InterviewAnswer(BaseModel):
+    question: str
+    answer: str
+    evaluation: InterviewEvaluation
+    is_follow_up: bool
+
+
+class InterviewReport(BaseModel):
+    overall_score: float = Field(ge=0, le=100)
+    summary: str
+    strengths: list[str]
+    improvements: list[str]
+    recommendation: str
+
+
+class Interview(BaseModel):
+    id: str
+    candidate_name: str
+    position: str
+    question_count: int
+    status: str
+    resume_file_name: str | None
+    questions: list[str]
+    current_question_index: int = Field(ge=0)
+    current_question: str | None = None
+    is_follow_up: bool = False
+    answers: list[InterviewAnswer]
+    report: InterviewReport | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class InterviewResponse(BaseModel):
+    request_id: str
+    interview: Interview
+
+
+class InterviewPageResponse(BaseModel):
+    request_id: str
+    items: list[Interview]
+    total: int = Field(ge=0)
+
+
+class InterviewTurnResponse(InterviewResponse):
+    question: str | None
+    question_number: int = Field(ge=0)
+    total_questions: int = Field(ge=1)
+    is_follow_up: bool = False
+    evaluation: InterviewEvaluation | None = None
+
+
+class InterviewReportResponse(BaseModel):
+    request_id: str
+    interview_id: str
+    report: InterviewReport
