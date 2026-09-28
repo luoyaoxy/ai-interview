@@ -1,3 +1,4 @@
+from app.core.errors import ServiceError
 from app.interview.service import InterviewService
 
 
@@ -138,4 +139,60 @@ def test_follow_up_survives_service_restart(client, services):
     )
     assert completed.status_code == 200
     assert completed.json()["interview"]["status"] == "completed"
+    assert completed.json()["interview"]["report"] is not None
+
+
+def test_last_answer_can_be_retried_when_report_generation_fails(
+    client, services, monkeypatch
+):
+    created = client.post(
+        "/api/v1/interviews",
+        headers=auth(),
+        json={"candidate_name": "C", "position": "Android", "question_count": 1},
+    )
+    interview_id = created.json()["interview"]["id"]
+    started = client.post(
+        f"/api/v1/interviews/{interview_id}/start", headers=auth()
+    )
+    assert started.status_code == 200
+
+    original_build_report = services.interviews._build_report
+    attempts = 0
+
+    async def fail_once(session):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ServiceError(
+                status_code=504,
+                code="LLM_TIMEOUT",
+                message="RAG LLM request timed out",
+            )
+        return await original_build_report(session)
+
+    monkeypatch.setattr(services.interviews, "_build_report", fail_once)
+
+    failed = client.post(
+        f"/api/v1/interviews/{interview_id}/answers",
+        headers=auth(),
+        json={"answer": "The answer can be retried safely."},
+    )
+    assert failed.status_code == 504
+    assert failed.json()["error"]["code"] == "LLM_TIMEOUT"
+
+    snapshot = client.get(f"/api/v1/interviews/{interview_id}", headers=auth())
+    interview = snapshot.json()["interview"]
+    assert interview["status"] == "in_progress"
+    assert interview["current_question_index"] == 0
+    assert interview["current_question"] == started.json()["question"]
+    assert interview["answers"] == []
+
+    completed = client.post(
+        f"/api/v1/interviews/{interview_id}/answers",
+        headers=auth(),
+        json={"answer": "The answer can be retried safely."},
+    )
+    assert completed.status_code == 200
+    assert completed.json()["interview"]["status"] == "completed"
+    assert len(completed.json()["interview"]["answers"]) == 1
     assert completed.json()["interview"]["report"] is not None

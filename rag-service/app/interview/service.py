@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -120,29 +120,43 @@ class InterviewService:
                 session.current_question_index
             ]
             evaluation = await self._evaluate(session, question, answer, is_follow_up)
-            session.answers.append(
-                AnswerRecord(
-                    question=question,
-                    answer=answer.strip(),
-                    evaluation=evaluation,
-                    is_follow_up=is_follow_up,
-                )
+            answer_record = AnswerRecord(
+                question=question,
+                answer=answer.strip(),
+                evaluation=evaluation,
+                is_follow_up=is_follow_up,
             )
+
+            follow_up_question = (
+                evaluation.follow_up_question
+                if not is_follow_up and evaluation.follow_up_needed
+                else None
+            )
+            next_index = session.current_question_index + 1
+            report: InterviewReport | None = None
+            if not follow_up_question and next_index >= len(session.questions):
+                report_session = replace(
+                    session,
+                    answers=[*session.answers, answer_record],
+                )
+                report = await self._build_report(report_session)
+
+            session.answers.append(answer_record)
 
             next_question: str | None
             next_is_follow_up = False
-            if not is_follow_up and evaluation.follow_up_needed and evaluation.follow_up_question:
-                session.pending_follow_up = evaluation.follow_up_question
+            if follow_up_question:
+                session.pending_follow_up = follow_up_question
                 next_question = session.pending_follow_up
                 next_is_follow_up = True
             else:
                 session.pending_follow_up = None
-                session.current_question_index += 1
+                session.current_question_index = next_index
                 if session.current_question_index < len(session.questions):
                     next_question = session.questions[session.current_question_index]
                 else:
                     next_question = None
-                    session.report = await self._build_report(session)
+                    session.report = report
                     session.status = InterviewStatus.COMPLETED
             self._touch(session)
             self._persist()
